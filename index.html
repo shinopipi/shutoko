@@ -679,8 +679,8 @@ function pump(){
 function bboxStr(ty,tx){const s=ty*DT_LAT,w=tx*DT_LON;return s.toFixed(4)+','+w.toFixed(4)+','+(s+DT_LAT).toFixed(4)+','+(w+DT_LON).toFixed(4);}
 /* pre-baked road tiles in this repo (data/roads, built by GitHub Actions); Overpass is the fallback */
 let BAKED=null;
-const bakedReady=fetch('data/roads/index.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(j&&j.tiles){BAKED={set:new Set(j.tiles),bbox:j.bbox};}}).catch(()=>{});
-function inBakedBox(ty,tx){if(!BAKED||!BAKED.bbox)return false;const b=BAKED.bbox,lat=(ty+0.5)*DT_LAT,lon=(tx+0.5)*DT_LON;return lat>=b[0]&&lat<=b[2]&&lon>=b[1]&&lon<=b[3];}
+const bakedReady=fetch('data/roads/index.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(j&&j.tiles){BAKED={set:new Set(j.tiles),bbox:j.bbox,missing:j.missing||[]};}}).catch(()=>{});
+function inBakedBox(ty,tx){if(!BAKED||!BAKED.bbox)return false;const b=BAKED.bbox,lat=(ty+0.5)*DT_LAT,lon=(tx+0.5)*DT_LON;if(!(lat>=b[0]&&lat<=b[2]&&lon>=b[1]&&lon<=b[3]))return false;for(const m of BAKED.missing){const s0=ty*DT_LAT,w0=tx*DT_LON;if(s0<m[2]&&s0+DT_LAT>m[0]&&w0<m[3]&&w0+DT_LON>m[1])return BAKED.set.has(dtKey(ty,tx))?'partial':false;}return true;}
 function addBaked(js){(js.w||[]).forEach(r=>{const [id,nodes,la,lo,tags]=r;const geometry=la.map((v,i)=>({lat:v/1e6,lon:lo[i]/1e6}));addWay({type:'way',id,nodes,geometry,tags});});}
 let tileSeq=0;
 function ensureTile(ty,tx){
@@ -690,6 +690,7 @@ function ensureTile(ty,tx){
   const done=()=>{t.state='ready';onTilesChanged();},fail=()=>{t.state='fail';onTilesChanged();};
   if(inBakedBox(ty,tx)){
     if(!BAKED.set.has(k)){done();return t;}
+    if(inBakedBox(ty,tx)==='partial'){overpassRoad(t,done,()=>{fetch('data/roads/'+k+'.json').then(r=>r.json()).then(js=>{addBaked(js);done();}).catch(fail);});return t;}
     fetch('data/roads/'+k+'.json').then(r=>{if(!r.ok)throw new Error('nf');return r.json();}).then(js=>{addBaked(js);done();}).catch(()=>overpassRoad(t,done,fail));
     return t;}
   overpassRoad(t,done,fail);return t;
