@@ -12,7 +12,8 @@
 <meta name="theme-color" content="#000000">
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;color:#fff;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-#c{display:block;position:fixed;inset:0;width:100vw;height:100vh}
+#c{display:block;position:fixed;left:0;top:0;width:100vw;height:100vh;height:100dvh}
+#bgload{position:fixed;left:50%;bottom:calc(110px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(0,0,0,.55);border-radius:12px;padding:6px 12px;font-size:12px;font-weight:700;pointer-events:none;display:none;white-space:nowrap}
 #hud{position:fixed;left:calc(12px + env(safe-area-inset-left));top:calc(10px + env(safe-area-inset-top));pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.85)}
 #spd{font-size:46px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 #spd small{font-size:14px;font-weight:600;margin-left:4px}
@@ -78,6 +79,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-appl
 <div class="pad" id="kd" data-k="down">ブレーキ</div>
 <div class="pad" id="ku" data-k="up">アクセル</div>
 <div id="toast"></div>
+<div id="bgload"></div>
 <div id="loading"><span id="loadmsg">コースを作っています…</span></div>
 <div id="credit">地図データ © OpenStreetMap contributors ／ 車モデル: vicent091036 (three.js examples)</div>
 
@@ -117,7 +119,8 @@ renderer.outputEncoding=THREE.LinearEncoding;
 renderer.toneMapping=THREE.NoToneMapping;
 renderer.shadowMap.enabled=true;
 renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-renderer.setSize(innerWidth,innerHeight);
+const viewW=()=>$('c').clientWidth||innerWidth,viewH=()=>$('c').clientHeight||innerHeight;
+renderer.setSize(viewW(),viewH(),false);
 const scene=new THREE.Scene();
 const camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.3,5000);
 scene.fog=new THREE.Fog(0xa9c7e3,300,3500);
@@ -233,7 +236,7 @@ const lampLights=[];for(let k=0;k<4;k++){const l=new THREE.PointLight(0xffaa55,0
 /* ---------- quality ---------- */
 let quality=isMobile?1:2;try{const q=parseInt(localStorage.getItem('shutoko_q'),10);if(q>=0&&q<=2)quality=q;}catch(e){}
 function applyQuality(){
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,[1,1.5,2][quality]));renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,[1,1.5,2][quality]));renderer.setSize(viewW(),viewH(),false);camera.aspect=viewW()/viewH();camera.updateProjectionMatrix();
   const ms=quality===2?2048:1024;
   if(sun.shadow.mapSize.x!==ms){sun.shadow.mapSize.set(ms,ms);if(sun.shadow.map){sun.shadow.map.dispose();sun.shadow.map=null;}}
   const sh=quality>0;
@@ -444,7 +447,7 @@ function makeCar(type,color,parent,player){
    ========================================================= */
 let CFG,P,T,RT,K,L,N,DS,HW,LANES,TMASK,CUT,HOLE,AREA_I,DIR_I,cpI,cars=[],grp=null,polys={water:[],park:[],land:[],truss:[]};
 let bMats=[],signMats=[],glowOpen,poolMatOpen,lampHeadMat,tailGlow,tailArr,nightHooks=[],animHooks=[],lightSlots=[],aviation=null,catEyes=null,delin=null;
-let rHash=null;
+let rHash=null,rebuildCity=null;
 const smp={p:new V3(),t:new V3(),r:new V3(),k:0};
 function sampleAt(s,o){o=o||smp;s=((s%L)+L)%L;const f=s/DS;const fi=Math.floor(f);const i=fi%N,j=(i+1)%N,a=f-fi;
   o.p.lerpVectors(P[i],P[j],a);o.t.lerpVectors(T[i],T[j],a).normalize();o.r.lerpVectors(RT[i],RT[j],a).normalize();o.k=K[i]*(1-a)+K[j]*a;return o;}
@@ -635,19 +638,20 @@ function infoBoard(s,msg){
    ========================================================= */
 const OSM={};
 const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
-function osmQuery(key){
+function osmQuery(key,part){
   const base=key==='c1'?C1_PTS.concat([C1_PTS[0]]):WG_OUT;
   const line=base.map(p=>p[0].toFixed(5)+','+p[1].toFixed(5)).join(',');
-  const nameRe=key==='c1'?'都心環状':'湾岸線';const R0=key==='c1'?320:300;
-  return '[out:json][timeout:120][maxsize:268435456];(way["highway"="motorway"]["name"~"'+nameRe+'"](around:300,'+line+');way["building"](around:'+R0+','+line+'););out geom;';
+  if(part==='road'){const nameRe=key==='c1'?'都心環状':'湾岸線';return '[out:json][timeout:40];way["highway"="motorway"]["name"~"'+nameRe+'"](around:300,'+line+');out geom qt;';}
+  const R0=key==='c1'?300:230;
+  return '[out:json][timeout:180][maxsize:268435456];way["building"](around:'+R0+','+line+');out geom qt;';
 }
-async function overpassFetch(q,onMsg){
+async function overpassFetch(q,onMsg,tmo){
   const ck='https://cache.local/osm-v1-'+q.length+'-'+[...q].reduce((h,c)=>(h*31+c.charCodeAt(0))|0,7);
   let cache=null;try{cache=await caches.open('shutoko-osm');const hit=await cache.match(ck);if(hit){onMsg('保存済みの地図データを読み込み中…');return await hit.json();}}catch(e){cache=null;}
   let lastErr=null;
   for(const ep of OVERPASS){
     try{onMsg('地図データをダウンロード中…（'+new URL(ep).host+'）');
-      const ctl=new AbortController();const to=setTimeout(()=>ctl.abort(),150000);
+      const ctl=new AbortController();const to=setTimeout(()=>ctl.abort(),tmo||150000);
       const r=await fetch(ep,{method:'POST',body:'data='+encodeURIComponent(q),headers:{'Content-Type':'application/x-www-form-urlencoded'},signal:ctl.signal});
       clearTimeout(to);if(!r.ok){lastErr=new Error('HTTP '+r.status);continue;}
       const txt=await r.text();const js=JSON.parse(txt);
@@ -691,10 +695,22 @@ function applyRealRoute(key){
     COURSES.wangan.dirs=[[0,'B 湾岸線　西行き（羽田方面）'],[r.pts.length,'B 湾岸線　東行き（千葉方面）']];}
   COURSES[key].real=true;return true;
 }
-async function loadReal(key,onMsg){
-  if(OSM[key])return true;
-  const js=await overpassFetch(osmQuery(key),onMsg);onMsg('地図データを解析中…');
-  OSM[key]=parseOSM(js);return true;
+async function loadRoads(key,onMsg){
+  OSM[key]=OSM[key]||{roads:null,blds:null};if(OSM[key].roads)return true;
+  const js=await overpassFetch(osmQuery(key,'road'),onMsg,25000);OSM[key].roads=parseOSM(js).roads;return true;
+}
+const bldLoading={};
+function loadBuildingsBg(key){
+  OSM[key]=OSM[key]||{roads:null,blds:null};
+  if(OSM[key].blds){if(CFG.key===key&&!CFG.cityReal&&rebuildCity)rebuildCity();return;}
+  if(bldLoading[key])return;bldLoading[key]=true;
+  const chip=$('bgload');const msg=t=>{chip.textContent='🏙 '+t;chip.style.display='block';};
+  msg('実在の建物データを読み込み中…（走りながら待てます）');
+  overpassFetch(osmQuery(key,'bld'),t=>msg(t.replace('地図データ','建物データ')),180000).then(js=>{
+    OSM[key].blds=parseOSM(js).blds;bldLoading[key]=false;
+    if(CFG.key===key&&rebuildCity){msg('建物を配置中…');setTimeout(()=>{try{rebuildCity();toast('実在の建物 '+OSM[key].blds.length+'棟を配置しました');}catch(e){}chip.style.display='none';},50);}
+    else chip.style.display='none';
+  }).catch(()=>{bldLoading[key]=false;msg('建物データを取得できませんでした（簡易の街のまま）');setTimeout(()=>chip.style.display='none',4000);});
 }
 
 /* =========================================================
@@ -934,7 +950,7 @@ function buildCourse(key){
 
   /* --- landmarks --- */
   if(key==='c1'){
-    towerXZ=tokyoTower(35.6586,139.7454);if(!(CFG.real&&OSM.c1)){dietBuilding(35.6759,139.7448);tokyoStation(35.6812,139.7671);}skytree(35.7101,139.8107);
+    towerXZ=tokyoTower(35.6586,139.7454);dietBuilding(35.6759,139.7448);tokyoStation(35.6812,139.7671);skytree(35.7101,139.8107);
     suspBridge(35.6405,139.7575,35.6320,139.7695,126,52,0xf2f2f2,0xffffff);
   }else{
     skytree(35.7101,139.8107);towerXZ=tokyoTower(35.6586,139.7454);
@@ -945,8 +961,13 @@ function buildCourse(key){
     airportStuff();
   }
 
+  /* --- city (rebuildable when real building data arrives) --- */
+  let cg=null;
+  const buildCity=()=>{
+  if(cg){grp.remove(cg);cg.traverse(o=>{if(o.geometry)o.geometry.dispose();});}
+  cg=new THREE.Group();grp.add(cg);const R=rng(CFG.seed+7);
   /* --- city --- */
-  for(let k=0;k<5;k++)bMats.push(facadeMat(k));
+  bMats=[];for(let k=0;k<5;k++)bMats.push(facadeMat(k));
   const chunks=new Map();const pushB=(k,g,x,z)=>{const key2=k*1e10+HK(Math.floor(x/700),Math.floor(z/700));let l=chunks.get(key2);if(!l)chunks.set(key2,l={k,list:[]});l.list.push(g);};
   const roofList=new Map();const pushR=(g,x,z)=>{const key2=HK(Math.floor(x/700),Math.floor(z/700));let l=roofList.get(key2);if(!l)roofList.set(key2,l=[]);l.push(g);};
   const avi=[];
@@ -959,7 +980,7 @@ function buildCourse(key){
   };
   const districts=CFG.districts.map(d=>{const [x,z]=ll(d[0],d[1]);return {x,z,r:d[2],h0:d[3],h1:d[4],type:d[5]};});
   const typeAt=(x,z)=>{let best=null,bd=1e9;for(const d of districts){const dd=Math.hypot(x-d.x,z-d.z)/d.r;if(dd<1&&dd<bd){bd=dd;best=d;}}return best?{d:best,f:1-bd}:null;};
-  const real=(CFG.real||CFG.realB)&&OSM[key]&&OSM[key].blds.length>0;const realR=key==='c1'?330:310;
+  const real=!!(OSM[key]&&OSM[key].blds&&OSM[key].blds.length>0&&$('realmap').checked);CFG.cityReal=real;const realR=key==='c1'?300:230;
   if(real){
     const wallP=new Map(),roofP=new Map();
     const getArr=(m,k)=>{let a=m.get(k);if(!a)m.set(k,a={p:[],n:[],u:[]});return a;};
@@ -1001,9 +1022,9 @@ function buildCourse(key){
       if(h>14&&n<=8&&R()<0.35){const rw=Math.sqrt(Math.abs(A))*0.3;const rh=2+R()*4;pushR(new THREE.BoxGeometry(rw,rh,rw).translate(cx,h+rh/2,cz),cx,cz);}
     });
     const mk=(a)=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(a.p,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(a.n,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(a.u,2));g.computeBoundingSphere();return g;};
-    wallP.forEach((a,kk)=>{if(!a.p.length)return;const m=new THREE.Mesh(mk(a),bMats[Math.floor(kk/1e10)]);m.castShadow=true;m.receiveShadow=true;grp.add(m);});
+    wallP.forEach((a,kk)=>{if(!a.p.length)return;const m=new THREE.Mesh(mk(a),bMats[Math.floor(kk/1e10)]);m.castShadow=true;m.receiveShadow=true;cg.add(m);});
     const realRoof=new THREE.MeshStandardMaterial({color:0x8a8c88,roughness:0.92,map:roofTex});
-    roofP.forEach(a=>{if(!a.p.length)return;const m=new THREE.Mesh(mk(a),realRoof);m.castShadow=true;m.receiveShadow=true;grp.add(m);});
+    roofP.forEach(a=>{if(!a.p.length)return;const m=new THREE.Mesh(mk(a),realRoof);m.castShadow=true;m.receiveShadow=true;cg.add(m);});
   }
   const G2=58,cells=new Set();const cr=Math.ceil(CFG.cityR/G2);
   for(let i=0;i<N;i+=30){const cx=Math.floor(P[i].x/G2),cz=Math.floor(P[i].z/G2);for(let a=-cr;a<=cr;a++)for(let b=-cr;b<=cr;b++)if(a*a+b*b<=cr*cr)cells.add(HK(cx+a,cz+b));}
@@ -1018,7 +1039,7 @@ function buildCourse(key){
     else if(type==='warehouse'){if(R()<0.25)return;w=34+R()*44;d=28+R()*40;h=8+R()*18;k=R()<0.7?3:0;}
     else {w=14+R()*24;d=14+R()*24;h=10+Math.pow(R(),2.2)*55;k=[0,1,1,0,2][R()*5|0];}
     if(towerXZ&&Math.hypot(x-towerXZ[0],z-towerXZ[1])<70)return;
-    if(real&&roadDist(x,z,realR+60)<realR+25)return;
+    if(real&&roadDist(x,z,realR+40)<realR+10)return;
     const hw2=w/2,hd2=d/2;
     if(blocked(x,z)||blocked(x-hw2,z-hd2)||blocked(x+hw2,z-hd2)||blocked(x-hw2,z+hd2)||blocked(x+hw2,z+hd2))return;
     if(roadDist(x,z,90)<12+Math.max(w,d)*0.72)return;
@@ -1026,9 +1047,15 @@ function buildCourse(key){
   });
   const cxm=(minX+maxX)/2,czm=(minZ+maxZ)/2,rad=Math.max(maxX-minX,maxZ-minZ)/2;
   for(let n=0;n<320;n++){const a=R()*Math.PI*2,r=rad+900+R()*2600;const x=cxm+Math.cos(a)*r,z=czm+Math.sin(a)*r;if(blocked(x,z))continue;const w=40+R()*50;addB([0,2,4][R()*3|0],x,z,w,40+Math.pow(R(),1.5)*200,40+R()*50);}
-  chunks.forEach(c=>{const m=new THREE.Mesh(mergeGeos(c.list.map(g=>{const ng=g.toNonIndexed();g.dispose();return ng;})),bMats[c.k]);m.castShadow=true;m.receiveShadow=true;grp.add(m);});
-  roofList.forEach(l=>{const m=new THREE.Mesh(mergeGeos(l),roofMat);m.castShadow=true;m.receiveShadow=true;grp.add(m);});
-  aviation=avi.length?glowPoints(avi,0xff2a2a,9,0):null;
+  chunks.forEach(c=>{const m=new THREE.Mesh(mergeGeos(c.list.map(g=>{const ng=g.toNonIndexed();g.dispose();return ng;})),bMats[c.k]);m.castShadow=true;m.receiveShadow=true;cg.add(m);});
+  roofList.forEach(l=>{const m=new THREE.Mesh(mergeGeos(l),roofMat);m.castShadow=true;m.receiveShadow=true;cg.add(m);});
+  aviation=avi.length?glowPoints(avi,0xff2a2a,9,0,cg):null;
+  if(sun.castShadow)cg.traverse(o=>{if(o.material)(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.needsUpdate=true);});
+  applyLight(night);
+  };
+  buildCity();
+  rebuildCity=()=>{if(CFG.key===key)buildCity();};
+
 
   /* --- trees --- */
   const treePts=[];
@@ -1234,16 +1261,17 @@ function startGame(nightOn){
     player.s=0;player.x=LANES[0];player.v=0;player.dist=0;camInit=false;
     setNight(nightOn,true);initAudio();loadBest();running=true;lapStart=clock;lapNo=0;
     toast(CFG.name+'<br><span style="font-size:15px">いってらっしゃい！</span>');};
-  const wantReal=$('realmap').checked;
-  if(wantReal&&!COURSES[selCourse].real&&!COURSES[selCourse].realB){
-    $('loading').style.display='flex';const msg=t=>{$('loadmsg').textContent=t;};
-    loadReal(selCourse,msg).then(()=>{msg('実在の道路・建物でコースを作成中…');return new Promise(r=>setTimeout(r,30));})
-     .then(()=>{const ok=applyRealRoute(selCourse);COURSES[selCourse].realB=OSM[selCourse].blds.length>0;buildCourse(selCourse);$('loading').style.display='none';go();
-       toast(CFG.name+'<br><span style="font-size:15px">'+(ok?'実在の道路線形':'簡易ルート')+'＋実在の建物 '+OSM[selCourse].blds.length+'棟</span>');})
-     .catch(e=>{$('loading').style.display='none';$('loadmsg').textContent='コースを作っています…';if(CFG.key!==selCourse)buildCourse(selCourse);go();toast('地図データを取得できなかったので<br>簡易マップで走ります');});
+  const wantReal=$('realmap').checked;const key=selCourse;
+  const after=()=>{if(wantReal)loadBuildingsBg(key);};
+  if(wantReal&&!COURSES[key].real&&!COURSES[key].roadTried){
+    COURSES[key].roadTried=true;
+    $('loading').style.display='flex';const msg=t=>{$('loadmsg').textContent=t.replace('地図データ','道路データ');};
+    loadRoads(key,msg).then(()=>{msg('実在の道路でコースを作成中…');return new Promise(r=>setTimeout(r,30));})
+     .then(()=>{const ok=applyRealRoute(key);buildCourse(key);$('loading').style.display='none';go();if(ok)toast(CFG.name+'<br><span style="font-size:15px">実在の道路線形で走ります</span>');after();})
+     .catch(e=>{$('loading').style.display='none';$('loadmsg').textContent='コースを作っています…';if(CFG.key!==key)buildCourse(key);go();after();});
     return;
   }
-  if(CFG.key!==selCourse)withLoading(()=>{buildCourse(selCourse);go();});else go();
+  if(CFG.key!==key)withLoading(()=>{buildCourse(key);go();after();});else{go();after();}
 }
 let heroBody=null;
 let carCol='ff6a00';try{const c=localStorage.getItem('shutoko_col');if(c)carCol=c;}catch(e){}
@@ -1263,7 +1291,7 @@ function loadHeroCar(){
         setM('body',heroBody);['rim_fl','rim_fr','rim_rr','rim_rl'].forEach(n=>setM(n,chrome));setM('trim',trim);setM('glass',glass);
         model.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=false;}});
         const box=new THREE.Box3().setFromObject(model);const sz=new V3();box.getSize(sz);
-        if(sz.x>sz.z)model.rotation.y=Math.PI/2;
+        model.rotation.y=sz.x>sz.z?-Math.PI/2:Math.PI;
         const len=Math.max(sz.x,sz.z);const k=4.55/len;model.scale.setScalar(k);
         const box2=new THREE.Box3().setFromObject(model);const c2=new V3();box2.getCenter(c2);
         model.position.set(-c2.x,-box2.min.y,-c2.z);
@@ -1345,7 +1373,7 @@ function place(dt){
   const s=placeCar(pl.mesh,pl.s,pl.x,yaw);
   const pt=s.t.clone(),pdir=dir.clone(),pr=s.r.clone();
   pl.wheels.forEach(w=>{w.rotation.order='YXZ';w.rotation.x+=pl.v*dt/0.34;if(w.userData.front)w.rotation.y=-pl.steer*0.35;});
-  if(pl.heroWheels)pl.heroWheels.forEach(w=>{w.rotation.x+=pl.v*dt/0.34;});
+  if(pl.heroWheels)pl.heroWheels.forEach(w=>{w.rotation.x-=pl.v*dt/0.34;});
   pl.mesh.userData.tail.material=pl.mesh.userData.bar.material=keys.down&&running?M.tailOn:M.tailOff;
   beam.position.copy(pl.mesh.position);beam.position.y+=0.06;tgt.copy(beam.position).add(pdir);beam.lookAt(tgt);
   spot.position.copy(pl.mesh.position).addScaledVector(pdir,2.1);spot.position.y+=0.75;spot.target.position.copy(pl.mesh.position).addScaledVector(pdir,30);
@@ -1400,7 +1428,8 @@ function place(dt){
     eng.ng.gain.setTargetAtTime(muted||!running?(muted?0:wet*0.03):clamp(pl.v/70,0,1)*0.05*tun+wet*0.035,t,0.1);eng.nf.frequency.setTargetAtTime(300+pl.v*15,t,0.1);}
 }
 
-addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();try{if(postOK)setupPost();}catch(e){postFallback();}});
+function onResize(){renderer.setSize(viewW(),viewH(),false);camera.aspect=viewW()/viewH();camera.updateProjectionMatrix();try{if(postOK)setupPost();}catch(e){postFallback();}}
+addEventListener('resize',onResize);addEventListener('orientationchange',()=>setTimeout(onResize,300));if(window.visualViewport)visualViewport.addEventListener('resize',onResize);
 document.addEventListener('visibilitychange',()=>{if(!ac)return;if(document.hidden)ac.suspend();else ac.resume();});
 
 /* =========================================================
