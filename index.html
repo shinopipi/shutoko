@@ -201,7 +201,7 @@ const quad=new THREE.Mesh(new THREE.PlaneGeometry(2,2));quad.frustumCulled=false
 const PVS='varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}';
 const pmat=(u,fs)=>new THREE.ShaderMaterial({uniforms:u,vertexShader:PVS,fragmentShader:fs,depthTest:false,depthWrite:false});
 const brightMat=pmat({tDiffuse:{value:null},threshold:{value:1.2},knee:{value:0.6}},
- 'uniform sampler2D tDiffuse;uniform float threshold;uniform float knee;varying vec2 vUv;void main(){vec3 c=texture2D(tDiffuse,vUv).rgb;float br=max(c.r,max(c.g,c.b));float soft=clamp(br-threshold+knee,0.0,2.0*knee);soft=soft*soft/(4.0*knee+1e-4);float k=max(soft,br-threshold)/max(br,1e-4);gl_FragColor=vec4(min(c*k,vec3(40.0)),1.0);}');
+ 'uniform sampler2D tDiffuse;uniform float threshold;uniform float knee;varying vec2 vUv;void main(){vec3 c=texture2D(tDiffuse,vUv).rgb;if(!(c.r<1e4&&c.g<1e4&&c.b<1e4&&c.r>=0.0&&c.g>=0.0&&c.b>=0.0))c=vec3(0.0);c=min(c,vec3(30.0));float br=max(c.r,max(c.g,c.b));float soft=clamp(br-threshold+knee,0.0,2.0*knee);soft=soft*soft/(4.0*knee+1e-4);float k=max(soft,br-threshold)/max(br,1e-4);gl_FragColor=vec4(min(c*k,vec3(40.0)),1.0);}');
 const downMat=pmat({tDiffuse:{value:null},texel:{value:new THREE.Vector2()}},
  'uniform sampler2D tDiffuse;uniform vec2 texel;varying vec2 vUv;void main(){vec3 c=texture2D(tDiffuse,vUv+texel*vec2(-1.0,-1.0)).rgb+texture2D(tDiffuse,vUv+texel*vec2(1.0,-1.0)).rgb+texture2D(tDiffuse,vUv+texel*vec2(-1.0,1.0)).rgb+texture2D(tDiffuse,vUv+texel*vec2(1.0,1.0)).rgb;gl_FragColor=vec4(c*0.25,1.0);}');
 const blurMat=pmat({tDiffuse:{value:null},dir:{value:new THREE.Vector2()}},
@@ -212,8 +212,8 @@ const finalMat=pmat({tScene:{value:null},tB0:{value:null},tB1:{value:null},tB2:{
   'vec3 aces(vec3 c){const mat3 I=mat3(vec3(0.59719,0.07600,0.02840),vec3(0.35458,0.90834,0.13383),vec3(0.04823,0.01566,0.83777));const mat3 O=mat3(vec3(1.60475,-0.10208,-0.00327),vec3(-0.53108,1.10813,-0.07276),vec3(-0.07367,-0.00605,1.07602));c*=exposure/0.6;c=I*c;c=RRT(c);c=O*c;return clamp(c,0.0,1.0);}',
   'vec3 toSRGB(vec3 c){return mix(c*12.92,1.055*pow(c,vec3(0.41666))-0.055,step(0.0031308,c));}',
   'float rnd(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}',
-  'void main(){vec3 c=texture2D(tScene,vUv).rgb;',
-  ' vec3 b=texture2D(tB0,vUv).rgb*0.5+texture2D(tB1,vUv).rgb*0.7+texture2D(tB2,vUv).rgb*0.9+texture2D(tB3,vUv).rgb*1.1;',
+  'void main(){vec3 c=texture2D(tScene,vUv).rgb;if(!(c.r<1e4&&c.g<1e4&&c.b<1e4&&c.r>=0.0&&c.g>=0.0&&c.b>=0.0))c=vec3(0.0);c=min(c,vec3(60.0));',
+  ' vec3 b=texture2D(tB0,vUv).rgb*0.5+texture2D(tB1,vUv).rgb*0.7+texture2D(tB2,vUv).rgb*0.9+texture2D(tB3,vUv).rgb*1.1;if(!(b.r<1e4&&b.g<1e4&&b.b<1e4&&b.r>=0.0&&b.g>=0.0&&b.b>=0.0))b=vec3(0.0);',
   ' c+=b*bloom;c*=tint;c=aces(c);c=toSRGB(c);',
   ' float l=dot(c,vec3(0.2126,0.7152,0.0722));c=mix(vec3(l),c,saturation);c=(c-0.5)*contrast+0.5;',
   ' vec2 q=vUv-0.5;q.x*=res.x/res.y*0.8;c*=1.0-vignette*smoothstep(0.25,0.95,length(q));',
@@ -345,7 +345,7 @@ const roofTex=tex(128,128,(c,w,h)=>{c.fillStyle='#8c8e8a';c.fillRect(0,0,w,h);fo
    Cars
    ========================================================= */
 const M={
-  glass:new THREE.MeshStandardMaterial({color:0x0c1219,metalness:0.9,roughness:0.06,envMapIntensity:1.4}),
+  glass:new THREE.MeshStandardMaterial({color:0x0c1219,metalness:0.9,roughness:0.14,envMapIntensity:1.2}),
   dark:new THREE.MeshStandardMaterial({color:0x111214,roughness:0.85}),
   chrome:new THREE.MeshStandardMaterial({color:0xd7d9dc,metalness:1,roughness:0.22}),
   head:new THREE.MeshStandardMaterial({color:0xffffff,emissive:0xfff3dc,emissiveIntensity:0.4,roughness:0.2}),
@@ -415,7 +415,7 @@ const PROTOS={};['sport','sedan','minivan','kei','taxi','truck'].forEach(t=>PROT
 const blobGeo=new THREE.PlaneGeometry(1,1);blobGeo.rotateX(-Math.PI/2);
 function makeCar(type,color,parent,player){
   const pr=PROTOS[type];const g=new THREE.Group();
-  const body=player?new THREE.MeshPhysicalMaterial({color,metalness:0.55,roughness:0.28,clearcoat:1,clearcoatRoughness:0.07}):new THREE.MeshStandardMaterial({color,metalness:0.45,roughness:0.33});
+  const body=player?new THREE.MeshPhysicalMaterial({color,metalness:0.55,roughness:0.3,clearcoat:1,clearcoatRoughness:0.16}):new THREE.MeshStandardMaterial({color,metalness:0.45,roughness:0.33});
   const add=(geo,mat,sh)=>{if(!geo)return null;const m=new THREE.Mesh(geo,mat);m.castShadow=sh;m.receiveShadow=false;g.add(m);return m;};
   add(pr.body,body,true);add(pr.glass,M.glass,false);add(pr.dark,M.dark,true);add(pr.chrome,M.chrome,false);add(pr.head,M.head,false);
   const tail=add(pr.tail,M.tailOff,false);add(pr.plate,pr.kei?M.plateY:M.plateW,false);add(pr.cargo,Math.random()<0.6?M.cargo:M.cargo2,true);add(pr.andon,M.andon,false);
@@ -583,11 +583,11 @@ function roadTextures(hw,lanes){
   const T=(cv,srgb)=>{const t=new THREE.CanvasTexture(cv);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=maxAniso;if(srgb)t.encoding=THREE.sRGBEncoding;return t;};
   return {map:T(cc,true),normal:T(nc,false),rough:T(rc,false),len:LEN};
 }
-async function overpassFetch(q,onMsg,tmo){
+async function overpassFetch(q,onMsg,tmo,startEp){
   const ck='https://cache.local/osm-v1-'+q.length+'-'+[...q].reduce((h,c)=>(h*31+c.charCodeAt(0))|0,7);
   let cache=null;try{cache=await caches.open('shutoko-osm');const hit=await cache.match(ck);if(hit){onMsg('保存済みの地図データを読み込み中…');return await hit.json();}}catch(e){cache=null;}
   let lastErr=null;
-  for(const ep of OVERPASS){
+  for(let ei=0;ei<OVERPASS.length;ei++){const ep=OVERPASS[(ei+(startEp||0))%OVERPASS.length];
     try{onMsg('地図データをダウンロード中…（'+new URL(ep).host+'）');
       const ctl=new AbortController();const to=setTimeout(()=>ctl.abort(),tmo||150000);
       const r=await fetch(ep,{method:'POST',body:'data='+encodeURIComponent(q),headers:{'Content-Type':'application/x-www-form-urlencoded'},signal:ctl.signal});
@@ -634,7 +634,7 @@ const pierMat=new THREE.MeshStandardMaterial({color:0xa4a6a0,roughness:0.9,map:w
 const steelMat=new THREE.MeshStandardMaterial({color:0x8e959b,roughness:0.45,metalness:0.6});
 const lampHeadMat=new THREE.MeshStandardMaterial({color:0xdddddd,emissive:0xffc070,emissiveIntensity:0,roughness:0.3});
 const fixtureMat=new THREE.MeshStandardMaterial({color:0xffe0b0,emissive:0xffb060,emissiveIntensity:2});
-const lampGlowMat=ptsMat(0xffb060,7,0),tunGlowMat=ptsMat(0xffa040,3.2,1),catMat=ptsMat(0xfff4e0,0.55,0),delinMat=ptsMat(0xffa030,0.8,0),aviMat=ptsMat(0xff2a2a,9,0);
+const lampGlowMat=ptsMat(0xffb060,5,0),tunGlowMat=ptsMat(0xffa040,3.2,1),catMat=ptsMat(0xfff4e0,0.55,0),delinMat=ptsMat(0xffa030,0.8,0),aviMat=ptsMat(0xff2a2a,9,0);
 const bMats=[0,1,2,3,4].map(facadeMat);
 const realRoofMat=new THREE.MeshStandardMaterial({color:0x8a8c88,roughness:0.92,map:roofTex});
 function applyWet(m){m.roughness=lerp(1,0.3,typeof wet==='number'?wet:0);const ns=lerp(0.9,0.35,typeof wet==='number'?wet:0);m.normalScale.set(ns,ns);m.envMapIntensity=lerp(1,2.2,typeof wet==='number'?wet:0);}
@@ -671,21 +671,36 @@ const dtOfLL=(lat,lon)=>[Math.floor(lat/DT_LAT),Math.floor(lon/DT_LON)];
 const ckOf=(x,z)=>HK(Math.floor(x/CH),Math.floor(z/CH));
 function tileReadyLL(lat,lon){if(offline)return true;const [ty,tx]=dtOfLL(lat,lon);const t=dataTiles.get(dtKey(ty,tx));return !!t&&(t.state==='ready'||t.state==='fail');}
 /* fetch queue: roads first, then buildings */
-const qRoad=[],qBld=[];let qBusy=0;
-function pump(){while(qBusy<2&&(qRoad.length||qBld.length)){const j=qRoad.length?qRoad.shift():qBld.shift();qBusy++;j().catch(()=>{}).then(()=>{qBusy--;pump();});}}
+const qRoad=[],qBld=[];let qBusy=0,bBusy=0;
+function pump(){
+  while(qBusy<3&&qRoad.length){const j=qRoad.shift();qBusy++;j().catch(()=>{}).then(()=>{qBusy--;pump();});}
+  if(!bBusy&&qBld.length&&qRoad.length===0){const j=qBld.shift();bBusy=1;j().catch(()=>{}).then(()=>{bBusy=0;pump();});}
+}
 function bboxStr(ty,tx){const s=ty*DT_LAT,w=tx*DT_LON;return s.toFixed(4)+','+w.toFixed(4)+','+(s+DT_LAT).toFixed(4)+','+(w+DT_LON).toFixed(4);}
+/* pre-baked road tiles in this repo (data/roads, built by GitHub Actions); Overpass is the fallback */
+let BAKED=null;
+const bakedReady=fetch('data/roads/index.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(j&&j.tiles){BAKED={set:new Set(j.tiles),bbox:j.bbox};}}).catch(()=>{});
+function inBakedBox(ty,tx){if(!BAKED||!BAKED.bbox)return false;const b=BAKED.bbox,lat=(ty+0.5)*DT_LAT,lon=(tx+0.5)*DT_LON;return lat>=b[0]&&lat<=b[2]&&lon>=b[1]&&lon<=b[3];}
+function addBaked(js){(js.w||[]).forEach(r=>{const [id,nodes,la,lo,tags]=r;const geometry=la.map((v,i)=>({lat:v/1e6,lon:lo[i]/1e6}));addWay({type:'way',id,nodes,geometry,tags});});}
+let tileSeq=0;
 function ensureTile(ty,tx){
   const k=dtKey(ty,tx);let t=dataTiles.get(k);if(t)return t;
   t={ty,tx,k,state:'loading',bState:'none'};dataTiles.set(k,t);
   if(offline){t.state='fail';return t;}
-  const q='[out:json][timeout:90];way["highway"~"^(motorway|motorway_link)$"]('+bboxStr(ty,tx)+');out geom qt;';
-  qRoad.push(()=>overpassFetch(q,()=>{},60000).then(js=>{(js.elements||[]).forEach(addWay);t.state='ready';onTilesChanged();})
-    .catch(()=>{t.state='fail';onTilesChanged();}));pump();
-  return t;
+  const done=()=>{t.state='ready';onTilesChanged();},fail=()=>{t.state='fail';onTilesChanged();};
+  if(inBakedBox(ty,tx)){
+    if(!BAKED.set.has(k)){done();return t;}
+    fetch('data/roads/'+k+'.json').then(r=>{if(!r.ok)throw new Error('nf');return r.json();}).then(js=>{addBaked(js);done();}).catch(()=>overpassRoad(t,done,fail));
+    return t;}
+  overpassRoad(t,done,fail);return t;
+}
+function overpassRoad(t,done,fail){
+  const q='[out:json][timeout:25];way["highway"~"^(motorway|motorway_link)$"]('+bboxStr(t.ty,t.tx)+');out geom qt;';const se=(tileSeq++)%OVERPASS.length;
+  qRoad.push(()=>overpassFetch(q,()=>{},20000,se).then(js=>{(js.elements||[]).forEach(addWay);done();}).catch(fail));pump();
 }
 function ensureBld(t){
   if(offline||t.bState!=='none'||t.state!=='ready')return;t.bState='loading';
-  const q='[out:json][timeout:150][maxsize:268435456];way["highway"~"^(motorway|motorway_link)$"]('+bboxStr(t.ty,t.tx)+')->.r;way["building"](around.r:220);out geom qt;';
+  const q='[out:json][timeout:150][maxsize:268435456];way["highway"~"^(motorway|motorway_link)$"]('+bboxStr(t.ty,t.tx)+')->.r;way["building"](around.r:170);out geom qt;';
   const chip=$('bgload');
   qBld.push(()=>{chip.textContent='🏙 周辺の建物データを読み込み中…';chip.style.display='block';
     return overpassFetch(q,()=>{},180000).then(js=>{let n=0;(js.elements||[]).forEach(el=>{if(el.type!=='way'||!el.geometry||el.geometry.length<4||bldSeen.has(el.id))return;bldSeen.add(el.id);
@@ -992,8 +1007,8 @@ function applyLight(n){
   tri(HEMI_S,n,hemi.color);tri(HEMI_G,n,hemi.groundColor);hemi.intensity=lerp(0.75,0.55,n);
   tri(SUN_COL,n,sun.color);sun.intensity=n<0.5?lerp(2.1,1.3,n*2):lerp(1.3,0.28,(n-0.5)*2);
   const e=clamp((n-0.3)/0.7,0,1);nightE=e;
-  finalMat.uniforms.exposure.value=lerp(1.0,1.3,e);
-  postLook.bloom=lerp(0.22,0.95,e);brightMat.uniforms.threshold.value=lerp(1.5,0.7,e);
+  finalMat.uniforms.exposure.value=lerp(1.0,1.08,e);
+  postLook.bloom=lerp(0.18,0.42,e);brightMat.uniforms.threshold.value=lerp(1.6,1.1,e);
   finalMat.uniforms.contrast.value=lerp(1.07,1.12,e);finalMat.uniforms.saturation.value=lerp(1.14,1.08,e);
   if(n<0.5)finalMat.uniforms.tint.value.set(lerp(1.03,1.08,n*2),1.0,lerp(0.95,0.86,n*2));else finalMat.uniforms.tint.value.set(lerp(1.08,0.94,e),lerp(1.0,0.98,e),lerp(0.86,1.07,e));
   tri(CLOUD_C,n,skyU.cloudCol.value);skyU.cloudCov.value=lerp(lerp(0.5,0.56,e),0.18,wet);skyU.cloudCol.value.multiplyScalar(1-0.45*wet);skyU.sunI.value*=1-0.85*wet;
@@ -1001,11 +1016,11 @@ function applyLight(n){
     finalMat.uniforms.saturation.value*=1-0.2*wet;}
   Object.values(ROADMATS).forEach(applyWet);
   rainMat.opacity=wet*0.42;
-  bMats.forEach(m=>m.emissiveIntensity=e*1.25);
-  groundMat.emissiveIntensity=e*0.9;
+  bMats.forEach(m=>m.emissiveIntensity=e*0.75);
+  groundMat.emissiveIntensity=e*0.55;
   if(lampHeadMat)lampHeadMat.emissiveIntensity=e*3;
   lampGlowMat.opacity=e;
-  poolMat.opacity=e*(quality===2?0.55:0.85);
+  poolMat.opacity=e*(quality===2?0.3:0.5);
   catMat.opacity=e*0.9;
   delinMat.opacity=e;
   beamMat.opacity=e*0.55;
@@ -1014,7 +1029,7 @@ function applyLight(n){
   M.head.emissiveIntensity=0.4+e*2.6;M.tailOff.emissiveIntensity=0.35+e*1.1;M.andon.emissiveIntensity=0.6+e*1.5;
   starMat.opacity=clamp((n-0.6)/0.4,0,1);moonMat.opacity=e;
   tri(WATER_C,n,waterMat.color);
-  spot.intensity=e*3.2;
+  spot.intensity=e*1.8;
   nightHooks.forEach(f=>f(e));
   updateEnv(n);updateFar();
 }
@@ -1068,9 +1083,9 @@ function loadHeroCar(){
     const ld=new THREE.GLTFLoader();ld.setDRACOLoader(draco);
     ld.load('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/models/gltf/ferrari.glb',gltf=>{
       try{const model=gltf.scene;
-        heroBody=new THREE.MeshPhysicalMaterial({color:parseInt(carCol,16),metalness:0.6,roughness:0.35,clearcoat:1,clearcoatRoughness:0.05});
-        const chrome=new THREE.MeshStandardMaterial({color:0xffffff,metalness:1,roughness:0.15});
-        const glass=new THREE.MeshPhysicalMaterial({color:0x10151c,metalness:0.2,roughness:0.02,transparent:true,opacity:0.55});
+        heroBody=new THREE.MeshPhysicalMaterial({color:parseInt(carCol,16),metalness:0.5,roughness:0.35,clearcoat:1,clearcoatRoughness:0.16});
+        const chrome=new THREE.MeshStandardMaterial({color:0xffffff,metalness:1,roughness:0.25});
+        const glass=new THREE.MeshPhysicalMaterial({color:0x10151c,metalness:0.2,roughness:0.12,transparent:true,opacity:0.55});
         const trim=new THREE.MeshStandardMaterial({color:0x0b0b0c,metalness:0.4,roughness:0.6});
         const setM=(n,m)=>{const o=model.getObjectByName(n);if(o)o.material=m;};
         setM('body',heroBody);['rim_fl','rim_fr','rim_rr','rim_rl'].forEach(n=>setM(n,chrome));setM('trim',trim);setM('glass',glass);
@@ -1146,9 +1161,11 @@ async function startGame(nightOn){
   for(const c of cars){c.active=false;c.mesh.visible=false;}
   if(!player.w||Math.hypot(player.mesh.position.x-x,player.mesh.position.z-z)>50||true){
     $('loading').style.display='flex';$('loadmsg').textContent='実際の道路データを読み込み中…';
-    if(!offline){manageWorld(false);const [lat,lon]=sp;const [ty,tx]=dtOfLL(lat,lon);const t0=performance.now();
-      while(performance.now()-t0<45000){const t=dataTiles.get(dtKey(ty,tx));let nb=0,ready=0;for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++){const t2=dataTiles.get(dtKey(ty+a,tx+b));nb++;if(t2&&t2.state!=='loading')ready++;}
-        $('loadmsg').textContent='実際の道路データを読み込み中… '+ready+'/'+nb;if(t&&t.state!=='loading'&&ready>=nb)break;if(t&&t.state==='ready'&&ready>=5&&performance.now()-t0>12000)break;await sleep(250);}
+    if(!offline){await Promise.race([bakedReady,sleep(6000)]);manageWorld(false);const [lat,lon]=sp;const [ty,tx]=dtOfLL(lat,lon);const t0=performance.now();let tc=0;
+      while(performance.now()-t0<40000){const t=dataTiles.get(dtKey(ty,tx));let nb=0,ready=0;for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++){const t2=dataTiles.get(dtKey(ty+a,tx+b));nb++;if(t2&&t2.state!=='loading')ready++;}
+        $('loadmsg').textContent='実際の道路データを読み込み中… '+ready+'/'+nb+(BAKED?'':'（地図サーバーから取得中）');
+        if(t&&t.state!=='loading'){if(!tc)tc=performance.now();if(ready>=nb||performance.now()-tc>4000)break;}
+        await sleep(200);}
       onTilesChanged();
       const any=[...ways.values()].some(w=>w.ready&&!w.dead);
       if(!any){buildOffline();toast('地図データを読み込めなかったので<br>簡易版の都心環状線で走ります');}}
@@ -1251,7 +1268,7 @@ function place(dt){
   for(const c of cars){if(c.active){placeOnWay(c.mesh,c.w,c.s,c.x,c.yaw||0);c.mesh.userData.tail.material=c.brake?M.tailOn:M.tailOff;}addTail(c.mesh,c.len,c.active);}
   tailGlow.geometry.attributes.position.needsUpdate=true;
   /* street/tunnel lights near the player */
-  if(quality===2){const inTun=pl.w.tun||s.p.y<-1.2;const L2=nearbyLights();for(let k=0;k<4;k++){const l=L2[k];if(l&&(nightE>0.02||inTun)){lampLights[k].position.set(l[0],l[1],l[2]);lampLights[k].intensity=inTun?2:nightE*2.4;}else lampLights[k].intensity=0;}}
+  if(quality===2){const inTun=pl.w.tun||s.p.y<-1.2;const L2=nearbyLights();for(let k=0;k<4;k++){const l=L2[k];if(l&&(nightE>0.02||inTun)){lampLights[k].position.set(l[0],l[1],l[2]);lampLights[k].intensity=inTun?1.4:nightE*1.3;}else lampLights[k].intensity=0;}}
   else lampLights.forEach(l=>l.intensity=0);
   sun.position.copy(pl.mesh.position).addScaledVector(sunDir,600);sun.target.position.copy(pl.mesh.position);
   skyGroup.position.copy(camera.position);moon.position.set(SUN_D[2].x*2300,SUN_D[2].y*2300,SUN_D[2].z*2300);
