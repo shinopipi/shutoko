@@ -294,36 +294,78 @@ def fetch_one(q, ep, timeout=140):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
+_MW = None
+
+def motorway_grid():
+    """高速道路の点（約20m間隔）を100mグリッドに登録（建物の距離判定用）"""
+    global _MW
+    if _MW is not None:
+        return _MW
+    import glob
+    g = {}
+    for f in glob.glob(os.path.join(OUT, "*_*.json")):
+        with open(f, encoding="utf-8") as fh:
+            for r in json.load(fh)["w"]:
+                la, lo = r[2], r[3]
+                for i in range(len(la)):
+                    pts = [(la[i], lo[i])]
+                    if i + 1 < len(la):
+                        d = math.hypot((la[i + 1] - la[i]) * 0.111, (lo[i + 1] - lo[i]) * 0.091)
+                        m = int(d // 20)
+                        for k in range(1, m + 1):
+                            t = k / (m + 1)
+                            pts.append((la[i] + (la[i + 1] - la[i]) * t, lo[i] + (lo[i + 1] - lo[i]) * t))
+                    for pa, po in pts:
+                        x, z = pa * 0.111, po * 0.091  # metres
+                        g.setdefault((int(x // 100), int(z // 100)), []).append((x, z))
+    _MW = g
+    return g
+
+def near_motorway(la, lo, r=150):
+    g = motorway_grid()
+    x, z = la * 0.111, lo * 0.091
+    cx, cz = int(x // 100), int(z // 100)
+    for a in (-2, -1, 0, 1, 2):
+        for b in (-2, -1, 0, 1, 2):
+            for px, pz in g.get((cx + a, cz + b), ()):
+                if (px - x) ** 2 + (pz - z) ** 2 < r * r:
+                    return True
+    return False
+
 def bld_tile(k, wi):
-    """1タイル分。重いタイルは4分割して取り直す"""
+    """1タイルを4x4に分け、高速道路が近い区画だけ bbox で建物を取得し、150m以内に絞る"""
     ty, tx = map(int, k.split("_"))
     s0, w0 = ty * DT_LAT, tx * DT_LON
-    def box(a, b, c, d):
-        return f"{a:.4f},{b:.4f},{c:.4f},{d:.4f}"
+    n = 4
+    hl, hw = DT_LAT / n, DT_LON / n
     els = {}
-    try:
-        js = fetch_one(bld_query(box(s0, w0, s0 + DT_LAT, w0 + DT_LON)), ENDPOINTS[wi % len(ENDPOINTS)])
-        for el in js.get("elements", []):
-            els[el["id"]] = el
-        return els, False
-    except Exception as ex:  # noqa
-        print("  split", k, ex, flush=True)
     err = False
-    hl, hw = DT_LAT / 2, DT_LON / 2
-    for qi, (a, b) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
-        bb = box(s0 + a * hl, w0 + b * hw, s0 + (a + 1) * hl, w0 + (b + 1) * hw)
-        ok = False
-        for t in range(2):
-            try:
-                js = fetch_one(bld_query(bb), ENDPOINTS[(wi + qi + t) % len(ENDPOINTS)], 120)
-                for el in js.get("elements", []):
-                    els[el["id"]] = el
-                ok = True
-                break
-            except Exception as ex:  # noqa
-                print("  quad retry", k, qi, ex, flush=True)
-                time.sleep(5)
-        err = err or not ok
+    for a in range(n):
+        for b in range(n):
+            sa, wa = s0 + a * hl, w0 + b * hw
+            # skip sub-boxes with no motorway within ~250 m of their centre/corners
+            probe = [(sa + hl * u, wa + hw * v) for u in (0, 0.5, 1) for v in (0, 0.5, 1)]
+            if not any(near_motorway(pa * 1e6, po * 1e6, 600) for pa, po in probe):
+                continue
+            q = f'[out:json][timeout:90];way["building"]({sa:.5f},{wa:.5f},{sa + hl:.5f},{wa + hw:.5f});out geom qt;'
+            ok = False
+            for t in range(3):
+                try:
+                    js = fetch_one(q, ENDPOINTS[(wi + a * n + b + t) % len(ENDPOINTS)], 100)
+                    for el in js.get("elements", []):
+                        g = el.get("geometry")
+                        if not g:
+                            continue
+                        cla = sum(p["lat"] for p in g) / len(g) * 1e6
+                        clo = sum(p["lon"] for p in g) / len(g) * 1e6
+                        if near_motorway(cla, clo, 150):
+                            els[el["id"]] = el
+                    ok = True
+                    break
+                except Exception as ex:  # noqa
+                    print("  retry", k, a, b, ex, flush=True)
+                    time.sleep(4 + t * 4)
+            err = err or not ok
     return els, err
 
 def bld_pack(k, els):
