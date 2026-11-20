@@ -321,10 +321,18 @@ def motorway_grid():
     _MW = g
     return g
 
+_NEAR = None
+
 def near_motorway(la, lo, r=150):
+    global _NEAR
     g = motorway_grid()
     x, z = la * 0.111, lo * 0.091
     cx, cz = int(x // 100), int(z // 100)
+    if r <= 200:
+        if _NEAR is None:
+            _NEAR = {(c[0] + a, c[1] + b) for c in g for a in (-2, -1, 0, 1, 2) for b in (-2, -1, 0, 1, 2)}
+        if (cx, cz) not in _NEAR:
+            return False
     for a in (-2, -1, 0, 1, 2):
         for b in (-2, -1, 0, 1, 2):
             for px, pz in g.get((cx + a, cz + b), ()):
@@ -422,10 +430,20 @@ def bake_buildings_pbf():
     motorway_grid()
     with open(seq, encoding="utf-8") as fh:
         for line in fh:
+            n_all += 1
+            # cheap pre-check on the first coordinate before parsing the whole record
+            i = line.find('"coordinates":[[[')
+            if i >= 0:
+                j = line.find("]", i + 17)
+                try:
+                    lo1, la1 = map(float, line[i + 17:j].split(",")[:2])
+                    if not near_motorway(la1 * 1e6, lo1 * 1e6, 200):
+                        continue
+                except ValueError:
+                    pass
             line = line.strip().lstrip("\x1e")
             if not line:
                 continue
-            n_all += 1
             try:
                 f = json.loads(line)
             except ValueError:
