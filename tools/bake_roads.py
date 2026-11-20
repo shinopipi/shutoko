@@ -143,8 +143,27 @@ def commit(msg):
         subprocess.run(["git", "pull", "-q", "--rebase", "origin", "main"], check=False)
         subprocess.run(["git", "push", "-q"], check=False)
 
+def bake_tolls():
+    """料金所（barrier=toll_booth）の位置を data/tolls.json に保存（1回の軽い問い合わせ）"""
+    s0, w0, n0, e0 = BBOX
+    q = f'[out:json][timeout:180];node["barrier"="toll_booth"]({s0},{w0},{n0},{e0});out;'
+    try:
+        js = fetch(q, 4)
+    except Exception as ex:  # noqa
+        print("tolls skipped:", ex, flush=True)
+        return
+    out = [[round(el["lat"] * 1e6), round(el["lon"] * 1e6), (el.get("tags") or {}).get("name", "")]
+           for el in js.get("elements", []) if el.get("type") == "node"]
+    os.makedirs("data", exist_ok=True)
+    with open("data/tolls.json", "w", encoding="utf-8") as fh:
+        json.dump({"v": 1, "t": out}, fh, ensure_ascii=False, separators=(",", ":"))
+    print("tolls:", len(out), flush=True)
+    commit("料金所データを更新")
+
 def main():
     import shutil
+    if not os.path.exists("data/tolls.json"):
+        bake_tolls()
     if os.path.isdir(RAW_OLD):
         shutil.rmtree(RAW_OLD)
     missing = []
