@@ -284,66 +284,121 @@ def bake_surface():
 
 BLD_OUT = "data/bld"
 
-def bake_buildings():
-    """高速道路から150m以内の建物の形・高さを data/bld/<ty>_<tx>.json に保存（タイルごとに再開可能）"""
-    with open(os.path.join(OUT, "index.json"), encoding="utf-8") as fh:
-        tiles = json.load(fh)["tiles"]
-    os.makedirs(BLD_OUT, exist_ok=True)
-    complete = True
-    done_n = 0
-    for k in sorted(tiles):
-        path = os.path.join(BLD_OUT, k + ".json")
-        if os.path.exists(path):
-            continue
-        if time.time() > DEADLINE:
-            complete = False
-            break
-        ty, tx = map(int, k.split("_"))
-        s0, w0 = ty * DT_LAT, tx * DT_LON
-        bb = f"{s0:.4f},{w0:.4f},{s0 + DT_LAT:.4f},{w0 + DT_LON:.4f}"
-        q = (f'[out:json][timeout:170][maxsize:268435456];way["highway"~"^(motorway|motorway_link)$"]({bb})->.r;'
-             f'way["building"](around.r:150);out geom qt;')
-        try:
-            js = fetch(q, 3)
-        except Exception as ex:  # noqa
-            print("bld failed", k, ex, flush=True)
-            with open(path, "w", encoding="utf-8") as fh:  # 取れなかったタイルはゲーム側で地図サーバーから取得
-                json.dump({"v": 1, "err": 1, "b": []}, fh)
-            continue
-        la0, lo0 = round(s0 * 1e6), round(w0 * 1e6)
-        out = []
+def bld_query(bb):
+    return (f'[out:json][timeout:120][maxsize:268435456];way["highway"~"^(motorway|motorway_link)$"]({bb})->.r;'
+            f'way["building"](around.r:150);out geom qt;')
+
+def fetch_one(q, ep, timeout=140):
+    data = urllib.parse.urlencode({"data": q}).encode()
+    req = urllib.request.Request(ep, data=data, headers={"User-Agent": "shutoko-drive-bake/1.3"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def bld_tile(k, wi):
+    """1タイル分。重いタイルは4分割して取り直す"""
+    ty, tx = map(int, k.split("_"))
+    s0, w0 = ty * DT_LAT, tx * DT_LON
+    def box(a, b, c, d):
+        return f"{a:.4f},{b:.4f},{c:.4f},{d:.4f}"
+    els = {}
+    try:
+        js = fetch_one(bld_query(box(s0, w0, s0 + DT_LAT, w0 + DT_LON)), ENDPOINTS[wi % len(ENDPOINTS)])
         for el in js.get("elements", []):
-            g = el.get("geometry")
-            if el.get("type") != "way" or not g or len(g) < 4:
-                continue
-            la = [round(p["lat"] * 1e6) for p in g]
-            lo = [round(p["lon"] * 1e6) for p in g]
-            # skip tiny sheds (< ~30 m2)
-            xs = [(v - la[0]) * 0.111 for v in la]
-            zs = [(v - lo[0]) * 0.091 for v in lo]
-            a = 0.0
-            for i in range(len(xs) - 1):
-                a += xs[i] * zs[i + 1] - xs[i + 1] * zs[i]
-            if abs(a) / 2 < 30:
-                continue
-            t = el.get("tags") or {}
-            def num(key):
-                try:
-                    return round(float(str(t.get(key, "0")).split(";")[0].replace("m", "").strip()), 1)
-                except ValueError:
-                    return 0
-            out.append([el["id"], [v - la0 for v in la], [v - lo0 for v in lo],
-                        [t.get("building", "yes"), num("height"), num("building:levels"), num("min_height"),
-                         t.get("building:colour", ""), t.get("roof:shape", "")]])
+            els[el["id"]] = el
+        return els, False
+    except Exception as ex:  # noqa
+        print("  split", k, ex, flush=True)
+    err = False
+    hl, hw = DT_LAT / 2, DT_LON / 2
+    for qi, (a, b) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
+        bb = box(s0 + a * hl, w0 + b * hw, s0 + (a + 1) * hl, w0 + (b + 1) * hw)
+        ok = False
+        for t in range(2):
+            try:
+                js = fetch_one(bld_query(bb), ENDPOINTS[(wi + qi + t) % len(ENDPOINTS)], 120)
+                for el in js.get("elements", []):
+                    els[el["id"]] = el
+                ok = True
+                break
+            except Exception as ex:  # noqa
+                print("  quad retry", k, qi, ex, flush=True)
+                time.sleep(5)
+        err = err or not ok
+    return els, err
+
+def bld_pack(k, els):
+    ty, tx = map(int, k.split("_"))
+    la0, lo0 = round(ty * DT_LAT * 1e6), round(tx * DT_LON * 1e6)
+    out = []
+    for el in els.values():
+        g = el.get("geometry")
+        if el.get("type") != "way" or not g or len(g) < 4:
+            continue
+        la = [round(p["lat"] * 1e6) for p in g]
+        lo = [round(p["lon"] * 1e6) for p in g]
+        xs = [(v - la[0]) * 0.111 for v in la]
+        zs = [(v - lo[0]) * 0.091 for v in lo]
+        a = 0.0
+        for i in range(len(xs) - 1):
+            a += xs[i] * zs[i + 1] - xs[i + 1] * zs[i]
+        if abs(a) / 2 < 30:
+            continue
+        t = el.get("tags") or {}
+        def num(key):
+            try:
+                return round(float(str(t.get(key, "0")).split(";")[0].replace("m", "").strip()), 1)
+            except ValueError:
+                return 0
+        out.append([el["id"], [v - la0 for v in la], [v - lo0 for v in lo],
+                    [t.get("building", "yes"), num("height"), num("building:levels"), num("min_height"),
+                     t.get("building:colour", ""), t.get("roof:shape", "")]])
+    return {"v": 1, "o": [la0, lo0], "b": out}
+
+def bake_buildings():
+    """高速道路から150m以内の建物を data/bld/<ty>_<tx>.json に保存（3並列・再開可能）"""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    with open(os.path.join(OUT, "index.json"), encoding="utf-8") as fh:
+        tiles = sorted(json.load(fh)["tiles"])
+    os.makedirs(BLD_OUT, exist_ok=True)
+    def state(k):
+        path = os.path.join(BLD_OUT, k + ".json")
+        if not os.path.exists(path):
+            return 0
+        try:
+            with open(path, encoding="utf-8") as fh:
+                js = json.load(fh)
+        except Exception:  # noqa
+            return 0
+        if js.get("err"):
+            return 1 if js.get("try", 1) < 2 else 2
+        return 2
+    todo = [k for k in tiles if state(k) == 0] + [k for k in tiles if state(k) == 1]
+    lock = threading.Lock()
+    cnt = [0]
+    def work(args):
+        i, k = args
+        if time.time() > DEADLINE:
+            return
+        prev = state(k)
+        els, err = bld_tile(k, i)
+        path = os.path.join(BLD_OUT, k + ".json")
+        js = bld_pack(k, els)
+        if err:
+            js["err"] = 1
+            js["try"] = 2 if prev == 1 else 1
         with open(path + ".tmp", "w", encoding="utf-8") as fh:
-            json.dump({"v": 1, "o": [la0, lo0], "b": out}, fh, ensure_ascii=False, separators=(",", ":"))
+            json.dump(js, fh, ensure_ascii=False, separators=(",", ":"))
         os.replace(path + ".tmp", path)
-        done_n += 1
-        print("bld", k, len(out), flush=True)
-        if done_n % 15 == 0:
-            commit("建物データ途中保存")
+        print("bld", k, len(js["b"]), "ERR" if err else "", flush=True)
+        with lock:
+            cnt[0] += 1
+            if cnt[0] % 20 == 0:
+                commit("建物データ途中保存")
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        list(ex.map(work, list(enumerate(todo))))
     have = sorted(f[:-5] for f in os.listdir(BLD_OUT) if f.endswith(".json") and f != "index.json")
-    complete = complete and all(k in set(have) for k in tiles)
+    complete = all(state(k) == 2 for k in tiles)
     with open(os.path.join(BLD_OUT, "index.json"), "w", encoding="utf-8") as fh:
         json.dump({"v": 1, "tiles": have, "complete": complete}, fh, separators=(",", ":"))
     commit("建物データを更新" + ("" if complete else "（続きは次回）"))
