@@ -10,11 +10,13 @@ ENDPOINTS = ["https://overpass-api.de/api/interpreter",
 DT_LAT, DT_LON = 0.04, 0.05
 BBOX = (34.90, 138.40, 37.20, 140.90)
 STEP = 0.5
-RAW = "data/roads_raw"
+RAW = "data/roads_raw2"
+RAW_OLD = "data/roads_raw"
 OUT = "data/roads"
 DEADLINE = time.time() + float(os.environ.get("BAKE_MINUTES", "95")) * 60
-KEEP = ["highway", "name", "ref", "oneway", "lanes", "layer", "bridge", "tunnel",
-        "covered", "maxspeed", "destination", "destination:ref"]
+KEEP = ["highway", "name", "name:en", "ref", "oneway", "lanes", "layer", "bridge", "tunnel",
+        "covered", "maxspeed", "destination", "destination:ref", "destination:en", "junction:ref"]
+JKEEP = ["name", "name:en", "ref"]
 
 def fetch(q, tries):
     data = urllib.parse.urlencode({"data": q}).encode()
@@ -22,7 +24,7 @@ def fetch(q, tries):
     for attempt in range(tries):
         ep = ENDPOINTS[attempt % len(ENDPOINTS)]
         try:
-            req = urllib.request.Request(ep, data=data, headers={"User-Agent": "shutoko-drive-bake/1.1"})
+            req = urllib.request.Request(ep, data=data, headers={"User-Agent": "shutoko-drive-bake/1.2"})
             with urllib.request.urlopen(req, timeout=150) as r:
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:  # noqa
@@ -46,7 +48,8 @@ def grab(s, w, n, e, depth, missing):
         return True
     if time.time() > DEADLINE:
         return False
-    q = f'[out:json][timeout:120];way["highway"~"^(motorway|motorway_link)$"]({s:.4f},{w:.4f},{n:.4f},{e:.4f});out geom qt;'
+    bb = f"{s:.4f},{w:.4f},{n:.4f},{e:.4f}"
+    q = f'[out:json][timeout:120];(way["highway"~"^(motorway|motorway_link)$"]({bb});node["highway"="motorway_junction"]({bb}););out geom qt;'
     print("fetch", name, "depth", depth, flush=True)
     try:
         js = fetch(q, 2 if depth < 2 else 3)
@@ -60,33 +63,54 @@ def grab(s, w, n, e, depth, missing):
         print("  SKIP", name, ex, flush=True)
         missing.append([s, w, n, e])
         return True
-    recs = [compact(el) for el in js.get("elements", [])
+    els = js.get("elements", [])
+    recs = [compact(el) for el in els
             if el.get("type") == "way" and el.get("geometry") and el.get("nodes")
             and not any(g is None for g in el["geometry"])]
+    jcts = [[round(el["lat"] * 1e6), round(el["lon"] * 1e6),
+             {k: v for k, v in (el.get("tags") or {}).items() if k in JKEEP}]
+            for el in els if el.get("type") == "node" and (el.get("tags") or {}).get("name")]
     os.makedirs(RAW, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(recs, fh, ensure_ascii=False, separators=(",", ":"))
-    print("  saved", len(recs), "ways", flush=True)
+        json.dump({"w": recs, "j": jcts}, fh, ensure_ascii=False, separators=(",", ":"))
+    print("  saved", len(recs), "ways", len(jcts), "junctions", flush=True)
     time.sleep(2)
     return True
 
 def build_tiles(missing, complete):
-    ways = {}
+    # 旧形式（v1）のデータがある間は、全範囲そろうまで差し替えない（遊べる状態を保つ）
+    idx = os.path.join(OUT, "index.json")
+    if not complete and os.path.exists(idx):
+        try:
+            if json.load(open(idx)).get("v", 1) < 2:
+                print("keep old v1 tiles until complete", flush=True)
+                return
+        except Exception:  # noqa
+            pass
+    ways, jcts = {}, {}
     for f in os.listdir(RAW):
         if f.endswith(".json"):
-            for rec in json.load(open(os.path.join(RAW, f), encoding="utf-8")):
+            d = json.load(open(os.path.join(RAW, f), encoding="utf-8"))
+            for rec in d.get("w", []):
                 ways[rec[0]] = rec
+            for j in d.get("j", []):
+                jcts[(j[0], j[1])] = j
     tiles = {}
     for rec in ways.values():
         keys = {(math.floor(la / 1e6 / DT_LAT), math.floor(lo / 1e6 / DT_LON)) for la, lo in zip(rec[2], rec[3])}
         for k in keys:
             tiles.setdefault(k, []).append(rec)
+    jt = {}
+    for j in jcts.values():
+        jt.setdefault((math.floor(j[0] / 1e6 / DT_LAT), math.floor(j[1] / 1e6 / DT_LON)), []).append(j)
     os.makedirs(OUT, exist_ok=True)
     for f in os.listdir(OUT):
         os.remove(os.path.join(OUT, f))
-    for (ty, tx), recs in tiles.items():
+    for k in set(tiles) | set(jt):
+        ty, tx = k
         with open(os.path.join(OUT, f"{ty}_{tx}.json"), "w", encoding="utf-8") as fh:
-            json.dump({"v": 1, "w": recs}, fh, ensure_ascii=False, separators=(",", ":"))
+            json.dump({"v": 2, "w": tiles.get(k, []), "j": jt.get(k, [])}, fh, ensure_ascii=False, separators=(",", ":"))
+    tiles = {k: 1 for k in set(tiles) | set(jt)}
     # 未取得の範囲は「missing」としてゲームに伝え、地図サーバーから補ってもらう
     s0, w0, n0, e0 = BBOX
     todo = []
@@ -101,7 +125,7 @@ def build_tiles(missing, complete):
             lon += STEP
         lat += STEP
     with open(os.path.join(OUT, "index.json"), "w") as fh:
-        json.dump({"v": 1, "dtLat": DT_LAT, "dtLon": DT_LON, "bbox": BBOX,
+        json.dump({"v": 2, "dtLat": DT_LAT, "dtLon": DT_LON, "bbox": BBOX,
                    "tiles": sorted(f"{a}_{b}" for a, b in tiles), "ways": len(ways),
                    "missing": missing + todo, "complete": complete,
                    "updated": time.strftime("%Y-%m-%d %H:%M")}, fh)
@@ -120,6 +144,9 @@ def commit(msg):
         subprocess.run(["git", "push", "-q"], check=False)
 
 def main():
+    import shutil
+    if os.path.isdir(RAW_OLD):
+        shutil.rmtree(RAW_OLD)
     missing = []
     complete = True
     s0, w0, n0, e0 = BBOX
