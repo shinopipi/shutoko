@@ -1313,7 +1313,10 @@ gateBridge(35.6280,139.8240,35.6370,139.8420);
 {const [fx,fz]=ll(35.6418,139.8618);ferrisWheel(fx,fz);}
 airportStuff();
 
-addEventListener('resize',()=>setTimeout(sizeMap,50));
+let lastVW=0,lastVH=0;
+function fitView(){const w=viewW(),h=viewH();if(w===lastVW&&h===lastVH)return;lastVW=w;lastVH=h;
+  renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();try{if(postOK)setupPost();}catch(e){postFallback();}sizeMap();}
+addEventListener('resize',fitView);addEventListener('orientationchange',()=>setTimeout(fitView,300));if(window.visualViewport)visualViewport.addEventListener('resize',fitView);
 document.addEventListener('visibilitychange',()=>{if(!ac)return;if(document.hidden)ac.suspend();else ac.resume();});
 document.querySelectorAll('#colors button').forEach(b=>{b.onclick=()=>setCarCol(b.dataset.col);});setCarCol(carCol);
 try{const sp=localStorage.getItem('shutoko_spawn');if(sp)$('spawn').value=sp;}catch(e){}
@@ -1328,6 +1331,7 @@ loadHeroCar();
 let last=performance.now(),frame=0;
 function loop(now){
   const dt=Math.min(0.05,(now-last)/1000);last=now;clock+=dt;
+  fitView();
   update(dt);place(dt);
   if((frame++%3)===0)drawMap();
   skyU.time.value=clock;finalMat.uniforms.time.value=clock;
