@@ -210,7 +210,8 @@ def bake_surface():
             js = fetch(q, 4)
         except Exception as ex:  # noqa
             print("surface batch failed", bi, ex, flush=True)
-            complete = False
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"pts": b, "w": [], "err": 1}, fh)
             continue
         out = []
         for el in js.get("elements", []):
@@ -274,6 +275,73 @@ def bake_surface():
     print("surface tiles:", len(names), "complete", complete, flush=True)
     commit("ランプ周辺の一般道データを更新")
 
+
+BLD_OUT = "data/bld"
+
+def bake_buildings():
+    """高速道路から150m以内の建物の形・高さを data/bld/<ty>_<tx>.json に保存（タイルごとに再開可能）"""
+    with open(os.path.join(OUT, "index.json"), encoding="utf-8") as fh:
+        tiles = json.load(fh)["tiles"]
+    os.makedirs(BLD_OUT, exist_ok=True)
+    complete = True
+    done_n = 0
+    for k in sorted(tiles):
+        path = os.path.join(BLD_OUT, k + ".json")
+        if os.path.exists(path):
+            continue
+        if time.time() > DEADLINE:
+            complete = False
+            break
+        ty, tx = map(int, k.split("_"))
+        s0, w0 = ty * DT_LAT, tx * DT_LON
+        bb = f"{s0:.4f},{w0:.4f},{s0 + DT_LAT:.4f},{w0 + DT_LON:.4f}"
+        q = (f'[out:json][timeout:170][maxsize:268435456];way["highway"~"^(motorway|motorway_link)$"]({bb})->.r;'
+             f'way["building"](around.r:150);out geom qt;')
+        try:
+            js = fetch(q, 3)
+        except Exception as ex:  # noqa
+            print("bld failed", k, ex, flush=True)
+            with open(path, "w", encoding="utf-8") as fh:  # 取れなかったタイルはゲーム側で地図サーバーから取得
+                json.dump({"v": 1, "err": 1, "b": []}, fh)
+            continue
+        la0, lo0 = round(s0 * 1e6), round(w0 * 1e6)
+        out = []
+        for el in js.get("elements", []):
+            g = el.get("geometry")
+            if el.get("type") != "way" or not g or len(g) < 4:
+                continue
+            la = [round(p["lat"] * 1e6) for p in g]
+            lo = [round(p["lon"] * 1e6) for p in g]
+            # skip tiny sheds (< ~30 m2)
+            xs = [(v - la[0]) * 0.111 for v in la]
+            zs = [(v - lo[0]) * 0.091 for v in lo]
+            a = 0.0
+            for i in range(len(xs) - 1):
+                a += xs[i] * zs[i + 1] - xs[i + 1] * zs[i]
+            if abs(a) / 2 < 30:
+                continue
+            t = el.get("tags") or {}
+            def num(key):
+                try:
+                    return round(float(str(t.get(key, "0")).split(";")[0].replace("m", "").strip()), 1)
+                except ValueError:
+                    return 0
+            out.append([el["id"], [v - la0 for v in la], [v - lo0 for v in lo],
+                        [t.get("building", "yes"), num("height"), num("building:levels"), num("min_height"),
+                         t.get("building:colour", ""), t.get("roof:shape", "")]])
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"v": 1, "o": [la0, lo0], "b": out}, fh, ensure_ascii=False, separators=(",", ":"))
+        done_n += 1
+        print("bld", k, len(out), flush=True)
+        if done_n % 15 == 0:
+            commit("建物データ途中保存")
+    have = sorted(f[:-5] for f in os.listdir(BLD_OUT) if f.endswith(".json") and f != "index.json")
+    complete = complete and all(k in set(have) for k in tiles)
+    with open(os.path.join(BLD_OUT, "index.json"), "w", encoding="utf-8") as fh:
+        json.dump({"v": 1, "tiles": have, "complete": complete}, fh, separators=(",", ":"))
+    commit("建物データを更新" + ("" if complete else "（続きは次回）"))
+    return complete
+
 def main():
     import shutil
     if not os.path.exists("data/tolls.json"):
@@ -301,6 +369,15 @@ def main():
             break
     build_tiles(missing, complete)
     commit("関東の高速道路データを更新" + ("" if complete else "（一部。続きは次回実行で取得）"))
+    bi = os.path.join(BLD_OUT, "index.json")
+    bdone = os.path.exists(bi) and json.load(open(bi)).get("complete")
+    if complete and not bdone and time.time() < DEADLINE:
+        bdone = bake_buildings()
+    si = os.path.join(SURF_OUT, "index.json")
+    sdone = os.path.exists(si) and json.load(open(si)).get("complete")
+    if not (complete and bdone and sdone):
+        with open("bake_more", "w") as fh:
+            fh.write("1")
 
 if __name__ == "__main__":
     main()

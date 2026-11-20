@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: false
 permissions:
   contents: write
+  actions: write
 jobs:
   bake:
     runs-on: ubuntu-latest
@@ -27,3 +28,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python tools/bake_roads.py
+      - name: 未完了なら続きを予約
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f bake_more ]; then gh workflow run bake-roads.yml -R ${{ github.repository }}; fi
