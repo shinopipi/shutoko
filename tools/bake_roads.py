@@ -396,6 +396,93 @@ def bld_pack(k, els):
                      t.get("building:colour", ""), t.get("roof:shape", "")]])
     return {"v": 1, "o": [la0, lo0], "b": out}
 
+def bake_buildings_pbf():
+    """Geofabrik の関東データ（PBF）から建物を一括で取り出す（地図サーバーを使わないので速くて確実）"""
+    import subprocess, shutil
+    if not shutil.which("osmium"):
+        print("osmium not installed", flush=True)
+        return None
+    url = "https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf"
+    work = "/tmp/bldpbf"
+    os.makedirs(work, exist_ok=True)
+    src = os.path.join(work, "kanto.osm.pbf")
+    if not os.path.exists(src):
+        subprocess.run(["curl", "-sSL", "-o", src, url], check=True)
+    print("pbf", os.path.getsize(src) // (1 << 20), "MB", flush=True)
+    s0, w0, n0, e0 = BBOX
+    flt = os.path.join(work, "bld.osm.pbf")
+    subprocess.run(["osmium", "tags-filter", "--overwrite", src, "w/building", "-o", flt], check=True)
+    seq = os.path.join(work, "bld.geojsonseq")
+    subprocess.run(["osmium", "export", "--overwrite", flt, "-f", "geojsonseq", "-o", seq,
+                    "--geometry-types=polygon", "--add-unique-id=type_id", "-x", "print_record_separator=false"], check=True)
+    with open(os.path.join(OUT, "index.json"), encoding="utf-8") as fh:
+        tiles = set(json.load(fh)["tiles"])
+    out = {}
+    n_all = n_keep = 0
+    motorway_grid()
+    with open(seq, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip().lstrip("\x1e")
+            if not line:
+                continue
+            n_all += 1
+            try:
+                f = json.loads(line)
+            except ValueError:
+                continue
+            geo = f.get("geometry") or {}
+            if geo.get("type") != "Polygon":
+                continue
+            ring = geo["coordinates"][0]
+            if len(ring) < 4:
+                continue
+            cla = sum(p[1] for p in ring) / len(ring)
+            clo = sum(p[0] for p in ring) / len(ring)
+            if not (s0 <= cla <= n0 and w0 <= clo <= e0):
+                continue
+            if not near_motorway(cla * 1e6, clo * 1e6, 150):
+                continue
+            k = f"{math.floor(cla / DT_LAT)}_{math.floor(clo / DT_LON)}"
+            if k not in tiles:
+                continue
+            la = [round(p[1] * 1e6) for p in ring]
+            lo = [round(p[0] * 1e6) for p in ring]
+            xs = [(v - la[0]) * 0.111 for v in la]
+            zs = [(v - lo[0]) * 0.091 for v in lo]
+            ar = 0.0
+            for i in range(len(xs) - 1):
+                ar += xs[i] * zs[i + 1] - xs[i + 1] * zs[i]
+            if abs(ar) / 2 < 30:
+                continue
+            t = f.get("properties") or {}
+            def num(key):
+                try:
+                    return round(float(str(t.get(key, "0")).split(";")[0].replace("m", "").strip()), 1)
+                except ValueError:
+                    return 0
+            fid = str(f.get("id", "w0"))
+            try:
+                wid = int(fid.lstrip("wr"))
+            except ValueError:
+                wid = n_all
+            ty, tx = map(int, k.split("_"))
+            la0, lo0 = round(ty * DT_LAT * 1e6), round(tx * DT_LON * 1e6)
+            out.setdefault(k, []).append([wid, [v - la0 for v in la], [v - lo0 for v in lo],
+                                          [t.get("building", "yes"), num("height"), num("building:levels"), num("min_height"),
+                                           t.get("building:colour", ""), t.get("roof:shape", "")]])
+            n_keep += 1
+    print("pbf buildings", n_all, "kept", n_keep, flush=True)
+    os.makedirs(BLD_OUT, exist_ok=True)
+    for k in tiles:
+        ty, tx = map(int, k.split("_"))
+        js = {"v": 1, "o": [round(ty * DT_LAT * 1e6), round(tx * DT_LON * 1e6)], "b": out.get(k, [])}
+        with open(os.path.join(BLD_OUT, k + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(js, fh, ensure_ascii=False, separators=(",", ":"))
+    with open(os.path.join(BLD_OUT, "index.json"), "w", encoding="utf-8") as fh:
+        json.dump({"v": 2, "tiles": sorted(tiles), "complete": True, "src": "geofabrik"}, fh, separators=(",", ":"))
+    commit("建物データを更新（Geofabrikの関東データから一括作成）")
+    return True
+
 def bake_buildings():
     """高速道路から150m以内の建物を data/bld/<ty>_<tx>.json に保存（3並列・再開可能）"""
     from concurrent.futures import ThreadPoolExecutor
@@ -478,8 +565,16 @@ def main():
     commit("関東の高速道路データを更新" + ("" if complete else "（一部。続きは次回実行で取得）"))
     bi = os.path.join(BLD_OUT, "index.json")
     bdone = os.path.exists(bi) and json.load(open(bi)).get("complete")
-    if complete and not bdone and time.time() < DEADLINE:
-        bdone = bake_buildings()
+    if complete and not (bdone and json.load(open(bi)).get("src") == "geofabrik"):
+        try:
+            r = bake_buildings_pbf()
+        except Exception as ex:  # noqa
+            print("pbf buildings failed:", ex, flush=True)
+            r = None
+        if r:
+            bdone = True
+        elif not bdone and time.time() < DEADLINE:
+            bdone = bake_buildings()
     si = os.path.join(SURF_OUT, "index.json")
     sdone = os.path.exists(si) and json.load(open(si)).get("complete")
     if not (complete and bdone and sdone):
