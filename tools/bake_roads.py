@@ -414,8 +414,20 @@ def bake_buildings_pbf():
     work = "/tmp/bldpbf"
     os.makedirs(work, exist_ok=True)
     src = os.path.join(work, "kanto.osm.pbf")
-    if not os.path.exists(src):
-        subprocess.run(["curl", "-sSL", "-o", src, url], check=True)
+    urls = [url,
+            "https://download.openstreetmap.fr/extracts/asia/japan/kanto-latest.osm.pbf",
+            "http://download.openstreetmap.fr/extracts/asia/japan/kanto-latest.osm.pbf"]
+    for u in urls:
+        if os.path.exists(src) and os.path.getsize(src) > 50 << 20:
+            break
+        r = subprocess.run(["curl", "-fsSL", "--retry", "3", "-A", "shutoko-drive-bake/1.4 (github actions)", "-o", src, u])
+        sz = os.path.getsize(src) if os.path.exists(src) else 0
+        print("download", u, "rc", r.returncode, "bytes", sz, flush=True)
+        if sz and sz < 4096:
+            with open(src, "rb") as fh:
+                print("  head:", fh.read(300), flush=True)
+    if not os.path.exists(src) or os.path.getsize(src) < 50 << 20:
+        return None
     print("pbf", os.path.getsize(src) // (1 << 20), "MB", flush=True)
     s0, w0, n0, e0 = BBOX
     flt = os.path.join(work, "bld.osm.pbf")
@@ -591,8 +603,8 @@ def main():
             r = None
         if r:
             bdone = True
-        elif not bdone and time.time() < DEADLINE:
-            bdone = bake_buildings()
+        else:
+            print("PBF unavailable; skip building bake this run", flush=True)
     si = os.path.join(SURF_OUT, "index.json")
     sdone = os.path.exists(si) and json.load(open(si)).get("complete")
     if not (complete and bdone and sdone):
