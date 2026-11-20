@@ -806,6 +806,9 @@ function buildPath(w){
 }
 function roadDist(x,z,maxD){const r=Math.ceil(maxD/50),cx=Math.floor(x/50),cz=Math.floor(z/50);let best=1e18;
   for(let a=-r;a<=r;a++)for(let b=-r;b<=r;b++){const l=rHash.get(HK(cx+a,cz+b));if(!l)continue;for(let q=0;q<l.length;q+=2){const p=l[q].P[l[q+1]];const dx=p.x-x,dz=p.z-z,d=dx*dx+dz*dz;if(d<best)best=d;}}return Math.sqrt(best);}
+function roadBelow(x,z,top,self,pad){const cx=Math.floor(x/50),cz=Math.floor(z/50);
+  for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++){const l=rHash.get(HK(cx+a,cz+b));if(!l)continue;for(let q=0;q<l.length;q+=2){const w=l[q];if(w===self||w.dead)continue;const p=w.P[l[q+1]];if(p.y>top-3)continue;
+    const d=Math.hypot(p.x-x,p.z-z);if(d<w.hw+(pad||0)+1.2)return true;}}return false;}
 function sampleWay(w,s,o){s=clamp(s,0,w.L);const f=s/w.DS;let i=Math.floor(f);if(i>=w.N)i=w.N-1;if(i<0)i=0;const a=clamp(f-i,0,1);
   o.p.lerpVectors(w.P[i],w.P[i+1],a);o.t.lerpVectors(w.T[i],w.T[i+1],a).normalize();o.r.lerpVectors(w.RT[i],w.RT[i+1],a).normalize();o.k=w.K[i]*(1-a)+w.K[i+1]*a;return o;}
 /* junction options */
@@ -901,8 +904,8 @@ function buildRun(W,i0,i1,A,jn,ch,under){
       [-1,1].forEach(side=>{const baseY=_sv.p.y+1.15;_pp.copy(_sv.p).addScaledVector(r,side*(W.hw+0.25));_pp.y=baseY+4.4;accBox(A.pole,_pp,_q,_s.set(0.22,8.8,0.22));
         _pp.copy(_sv.p).addScaledVector(r,side*(W.hw-0.95));_pp.y=_sv.p.y+10;accBox(A.arm,_pp,_q,_s.set(2.6,0.14,0.14));
         _pp.copy(_sv.p).addScaledVector(r,side*(W.hw-1.9));_pp.y=_sv.p.y+9.85;accBox(A.head,_pp,_q,_s.set(1.1,0.2,0.45));A.lg.push(_pp.x,_pp.y-0.2,_pp.z);if(ch.lights.length<400)ch.lights.push([_pp.x,_pp.y-0.6,_pp.z]);});}});
-  /* piers */
-  for(let s=Math.ceil(i0*W.DS/36)*36;s<=i1*W.DS;s+=36){sampleWay(W,s,_sv);if(_sv.p.y<4)continue;const r=_sv.r;_q.setFromAxisAngle(UP,Math.atan2(-r.z,r.x));const h=_sv.p.y-2.7;
+  /* piers (never inside a road that runs underneath) */
+  for(let s=Math.ceil(i0*W.DS/36)*36;s<=i1*W.DS;s+=36){sampleWay(W,s,_sv);if(_sv.p.y<4)continue;if(roadBelow(_sv.p.x,_sv.p.z,_sv.p.y,W,W.hw+0.8))continue;const r=_sv.r;_q.setFromAxisAngle(UP,Math.atan2(-r.z,r.x));const h=_sv.p.y-2.7;
     _pp.set(_sv.p.x,h/2,_sv.p.z);accBox(A.pier,_pp,_q,_s.set(2.4,h,2.4));_pp.set(_sv.p.x,_sv.p.y-2.7,_sv.p.z);accBox(A.pier,_pp,_q,_s.set(W.hw*2+1.2,1.5,2.2));}
   /* cat's eyes & delineators */
   for(let s=Math.ceil(i0*W.DS/12)*12;s<=i1*W.DS;s+=12){sampleWay(W,s,_sv);for(let k=0;k<W.lanes-1;k++){const x=(W.lanesX[k]+W.lanesX[k+1])/2;_pp.copy(_sv.p).addScaledVector(_sv.r,x);A.cat.push(_pp.x,_pp.y+0.1,_pp.z);}
@@ -1559,7 +1562,9 @@ function update(dt){
   }else{pl.steer=0;pl.v=Math.max(0,pl.v-20*dt);}
   sampleWay(pl.w,pl.s,smp);
   const lat=pl.steer*7.5*Math.min(1,pl.v/10)+pl.v*pl.v*smp.k*0.55;pl.x+=lat*dt;pl.lat=lat;
-  const lim=pl.w.hw-1.05;if(Math.abs(pl.x)>lim){pl.x=Math.sign(pl.x)*lim;if(pl.v>6){pl.v*=Math.exp(-dt*1.6);shake=Math.max(shake,0.12);}}
+  /* gentle lane keeping when not steering (no more getting glued to the wall) */
+  if(Math.abs(pl.steer)<0.12&&pl.v>2){const L=pl.w.lanesX||[0];let tg=L[0];for(const x of L)if(Math.abs(x-pl.x)<Math.abs(tg-pl.x))tg=x;pl.x+=clamp((tg-pl.x)*1.4,-1.8,1.8)*dt;}
+  const lim=pl.w.hw-1.05;if(Math.abs(pl.x)>lim){const into=Math.sign(pl.x)*lat;pl.x=Math.sign(pl.x)*lim;if(pl.v>6&&into>0.8){pl.v*=Math.exp(-dt*1.6*Math.min(1,into/3));shake=Math.max(shake,0.12);}}
   /* move along network */
   let move=pl.v*dt;odo+=move;
   for(let guard=0;guard<4&&move>0;guard++){
