@@ -314,7 +314,7 @@ const C1_PTS=[
  [35.6545,139.7485,12],[35.6537,139.7425,12],[35.6530,139.7378,12],[35.6575,139.7385,14],[35.6638,139.7408,14],[35.6690,139.7445,6],
  [35.6730,139.7482,-12],[35.6798,139.7466,-14],[35.6850,139.7480,-14],[35.6893,139.7520,-12],[35.6918,139.7548,-5],[35.6912,139.7590,8],
  [35.6898,139.7650,12],[35.6868,139.7715,12]];
-const START_POINTS=[[35.6838,139.7765],[35.6548,139.7590],[35.6000,139.7545],[35.6675,139.9250],[35.6810,139.7890],[35.5554,139.7533]];
+const START_POINTS=[[35.6838,139.7765],[35.6548,139.7590],[35.6000,139.7545],[35.6675,139.9250],[35.6810,139.7890],[35.5518,139.7455]];
 const FOG=[450,4200,200,3200];
 const SKINS=[
  {id:'modern',name:'現代（LED照明）',lamp:0xeef2ff,tun:0xf0f4ff,pool:0xd8e2ff,asphalt:'#2c2e31',agg:[34,62],paint:'#f6f6f0',wear:0.25,patches:3,cracks:14,rough:0.95,wall:0xd0d3cf,signG:'#0e6b3a',signDirt:0,signGlow:1.2,
@@ -1051,7 +1051,7 @@ const fareOf=n=>{let h=7;for(const ch of n)h=(h*31+ch.charCodeAt(0))>>>0;return 
 function gatesFor(W){const out=[];if(W.surface||W.tun||!W.ready)return out;
   const tolls=[];if(tollHash.size){for(let i=0;i<=W.N;i+=2){const p=W.P[i];const l=tollHash.get(HK(Math.floor(p.x/60),Math.floor(p.z/60)));if(!l)continue;
     for(const t of l){const d=Math.hypot(t.x-p.x,t.z-p.z);if(d<16){const s=clamp(i*W.DS,30,W.L-12);if(W.L<60||tolls.some(q=>Math.abs(q.s-s)<120))continue;tolls.push({s,name:t.name});}}}}
-  if(W.L>=70&&isEntrance(W)){const t=tolls[0];out.push({s:t?t.s:clamp(W.L*0.28,38,90),kind:'entry',name:entName(W)});}
+  if(W.L>=70&&(W._entName||isEntrance(W))){const t=tolls[0];out.push({s:t?t.s:clamp(W.L*0.28,38,90),kind:'entry',name:entName(W)});}
   else tolls.forEach(t=>out.push({s:t.s,kind:'main',name:(t.name||'').replace(/料金所$/,'')}));
   return out;}
 /* materials for gates */
@@ -1128,7 +1128,7 @@ function buildGates(W,g,ch,inC){
     const rt={W,s:G0.s,kind:G0.kind,name:G0.name,lanes,inside:false};
     let a=gatesByWay.get(W);if(!a)gatesByWay.set(W,a=[]);a.push(rt);a.sort((p,q)=>p.s-q.s);ch.gates.push(rt);
   }
-  if(W.link&&W.L>160&&isEntrance(W)){const s=W.L-115;if(inC(W,Math.round(s/W.DS)))roadside(g,W,s,mergeGeo,mergeMat(),1.6);}
+  if(W.link&&((W.L>160&&isEntrance(W))||(W._mergeSign&&W.L>50))){const s=W._mergeSign?Math.max(15,W.L-100):W.L-115;if(inC(W,Math.round(s/W.DS)))roadside(g,W,s,mergeGeo,mergeMat(),1.6);}
 }
 function laneIdx(W,x){let b=0;for(let k=1;k<W.lanes;k++)if(Math.abs(W.lanesX[k]-x)<Math.abs(W.lanesX[b]-x))b=k;return b;}
 function etcBeep(){if(!ac||muted)return;try{const t=ac.currentTime;const os=ac.createOscillator();os.type='sine';os.frequency.value=2050;const g=ac.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.16,t+0.01);g.gain.setValueAtTime(0.16,t+0.14);g.gain.linearRampToValueAtTime(0,t+0.17);os.connect(g);g.connect(ac.destination);os.start(t);os.stop(t+0.2);}catch(e){}}
@@ -1159,21 +1159,25 @@ function updateGates(dt){const pl=player;const half=(pl.mesh.userData.len||4.5)/
 function gateAhead(c){const list=gatesByWay.get(c.w);if(!list)return null;for(const G of list){const d=G.s-c.s;if(d>-4&&d<150)return [G,d];}return null;}
 /* Haneda entrance scenario: a short surface street leading to the real ramp */
 let approachWay=null;
-function findEntrance(lat,lon){const [x0,z0]=ll(lat,lon);let best=null,bd=1e18;
+const HANEDA_RAMP=23647084;
+function findEntrance(lat,lon){const hw=ways.get(HANEDA_RAMP);if(hw&&hw.ready&&!hw.dead)return hw;
+  const [x0,z0]=ll(lat,lon);let best=null,bd=1e18;
   for(const w of ways.values()){if(!w.ready||w.dead||!w.link||w.L<80||w.surface)continue;const l=nodeWays.get(w.nodes[0])||[];if(l.some(e=>e.w!==w&&!e.w.dead&&!e.w.surface))continue;const fm=firstMain(w);if(!fm)continue;
     const p=w.P[0];let d=Math.hypot(p.x-x0,p.z-z0);if(/羽田線/.test(fm.name||''))d-=1200;if(d<bd){bd=d;best=w;}}
   return bd<2600?best:null;}
 function removeApproach(){const w=approachWay;if(!w)return;w.dead=true;w.nodes.forEach(nid=>{const a=nodeWays.get(nid);if(a){const b=a.filter(e=>e.w!==w);if(b.length)nodeWays.set(nid,b);else nodeWays.delete(nid);}});
   chunkWays.forEach((set,ck)=>{if(set.delete(w))markDirty(ck);});approachWay=null;}
 function makeApproach(link){removeApproach();
-  const p0=link.P[0],t0=link.T[0];let hx=-t0.x,hz=-t0.z;const hl=Math.hypot(hx,hz)||1;hx/=hl;hz/=hl;
-  const pts=[[p0.x,p0.z]];let x=p0.x,z=p0.z;const step=10,turn=(32*Math.PI/180)/13;
-  for(let d=step;d<=480;d+=step){if(d>130&&d<=260){const c=Math.cos(turn),sn=Math.sin(turn);const nx=hx*c-hz*sn,nz=hx*sn+hz*c;hx=nx;hz=nz;}x+=hx*step;z+=hz*step;pts.push([x,z]);}
+  const p0=link.P[0],t0=link.T[4]||link.T[0],r0=link.RT[4]||link.RT[0];
+  const a0=Math.atan2(-t0.z,-t0.x);let a1=Math.atan2(-r0.z,-r0.x);while(a1-a0>Math.PI)a1-=2*Math.PI;while(a1-a0<-Math.PI)a1+=2*Math.PI;
+  const pts=[[p0.x,p0.z]];let x=p0.x,z=p0.z;const step=5;
+  for(let d=step;d<=470;d+=step){const f=clamp((d-25)/45,0,1);const a=a0+(a1-a0)*(f*f*(3-2*f));x+=Math.cos(a)*step;z+=Math.sin(a)*step;pts.push([x,z]);}
   pts.reverse();
   const nodes=pts.map((q,i)=>i===pts.length-1?link.nodes[0]:-777000-i);
   const w={id:-777,nodes,ll:pts.map(q=>toLL(q[0],q[1])),t:{highway:'primary',name:'一般道'},link:false,lanes:2,hw:4.4,level:0,tun:false,name:'一般道',ref:'',ready:false,dead:false,lanesX:[-1.75,1.75],fixedY:pts.map(()=>0.6),limit:50,surface:true,entry:link};
   ways.set(w.id,w);nodes.forEach((nid,i)=>{let a=nodeWays.get(nid);if(!a)nodeWays.set(nid,a=[]);a.push({w,i});});buildPath(w);
   link._entName='羽田入口';link._jn=null;
+  {let w2=link;for(let k=0;k<5&&w2&&w2.link;k++){const nx=(nodeWays.get(w2.nodes[w2.nodes.length-1])||[]).find(e=>e.w!==w2&&e.i===0&&!e.w.dead);if(!nx)break;if(!nx.w.link){w2._mergeSign=true;w2._jn=null;for(let i=0;i<=w2.N;i+=2)markDirty(ckOf(w2.P[i].x,w2.P[i].z));break;}w2=nx.w;}}
   for(let i=0;i<=link.N;i+=2)markDirty(ckOf(link.P[i].x,link.P[i].z));
   approachWay=w;return w;}
 function buildApproachSigns(W,g,inC){const link=W.entry;if(!link||link.dead)return;const at=s=>s>=5&&s<=W.L-2&&inC(W,Math.round(s/W.DS));
