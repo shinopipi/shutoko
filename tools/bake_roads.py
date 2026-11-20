@@ -160,10 +160,127 @@ def bake_tolls():
     print("tolls:", len(out), flush=True)
     commit("料金所データを更新")
 
+
+SURF_RAW = "data/surface_raw"
+SURF_OUT = "data/surface"
+SURF_HW = "^(trunk|primary|secondary|tertiary|unclassified|residential|trunk_link|primary_link|secondary_link)$"
+SURF_KEEP = ["highway", "name", "name:en", "ref", "lanes", "oneway"]
+EXTRA_SURF = [(35.551859, 139.745543)]  # 羽田入口（都心方面）: 一般道と交差するランプの点
+
+def surface_points():
+    """一般道とつながるランプの端（ほかの高速道路とつながっていない端）"""
+    import glob, collections
+    ways = {}
+    for f in glob.glob(os.path.join(OUT, "*_*.json")):
+        with open(f, encoding="utf-8") as fh:
+            for r in json.load(fh)["w"]:
+                ways[r[0]] = r
+    deg = collections.Counter()
+    for r in ways.values():
+        for n in set(r[1]):
+            deg[n] += 1
+    pts = set()
+    for r in ways.values():
+        if r[4].get("highway") != "motorway_link":
+            continue
+        for k in (0, -1):
+            if deg[r[1][k]] == 1:
+                pts.add((r[2][k] / 1e6, r[3][k] / 1e6))
+    pts |= set(EXTRA_SURF)
+    return sorted(pts)
+
+def bake_surface():
+    """ランプ出入口のまわり（半径350m）の一般道を data/surface/<ty>_<tx>.json に保存"""
+    pts = surface_points()
+    print("surface points:", len(pts), flush=True)
+    os.makedirs(SURF_RAW, exist_ok=True)
+    B = 30
+    batches = [pts[i:i + B] for i in range(0, len(pts), B)]
+    complete = True
+    for bi, b in enumerate(batches):
+        path = os.path.join(SURF_RAW, f"b{bi:04d}.json")
+        if os.path.exists(path):
+            continue
+        if time.time() > DEADLINE:
+            complete = False
+            break
+        body = "".join(f'way(around:350,{la:.6f},{lo:.6f})["highway"~"{SURF_HW}"];' for la, lo in b)
+        q = f"[out:json][timeout:170];({body});out geom qt;"
+        try:
+            js = fetch(q, 4)
+        except Exception as ex:  # noqa
+            print("surface batch failed", bi, ex, flush=True)
+            complete = False
+            continue
+        out = []
+        for el in js.get("elements", []):
+            if el.get("type") != "way" or not el.get("geometry"):
+                continue
+            tags = {k: v for k, v in (el.get("tags") or {}).items() if k in SURF_KEEP}
+            out.append([el["id"], el["nodes"], [round(g["lat"] * 1e6) for g in el["geometry"]],
+                        [round(g["lon"] * 1e6) for g in el["geometry"]], tags])
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"pts": b, "w": out}, fh, ensure_ascii=False, separators=(",", ":"))
+        print("surface batch", bi, "/", len(batches), "ways", len(out), flush=True)
+        if bi % 8 == 7:
+            commit("一般道データ途中保存")
+    # trim each street to the parts within 420 m of a ramp end, then tile
+    import glob
+    near = {}
+    for f in sorted(glob.glob(os.path.join(SURF_RAW, "b*.json"))):
+        with open(f, encoding="utf-8") as fh:
+            js = json.load(fh)
+        for la, lo in js["pts"]:
+            near.setdefault((round(la / 0.005), round(lo / 0.006)), []).append((la, lo))
+        for r in js["w"]:
+            near.setdefault("_w", {})[r[0]] = r
+    wl = near.pop("_w", {})
+    def close(la, lo):
+        ci, cj = round(la / 0.005), round(lo / 0.006)
+        for a in (-1, 0, 1):
+            for b in (-1, 0, 1):
+                for pa, po in near.get((ci + a, cj + b), []):
+                    if math.hypot((la - pa) * 111000, (lo - po) * 91000) < 420:
+                        return True
+        return False
+    tiles = {}
+    for wid, (id_, nodes, la, lo, tags) in wl.items():
+        keep = [close(la[i] / 1e6, lo[i] / 1e6) for i in range(len(nodes))]
+        seg = []
+        segs = []
+        for i in range(len(nodes)):
+            if keep[i] or (i > 0 and keep[i - 1]) or (i + 1 < len(nodes) and keep[i + 1]):
+                seg.append(i)
+            elif seg:
+                segs.append(seg); seg = []
+        if seg:
+            segs.append(seg)
+        for k, sg in enumerate(segs):
+            if len(sg) < 2:
+                continue
+            rec = [id_ * 100 + k, [nodes[i] for i in sg], [la[i] for i in sg], [lo[i] for i in sg], tags]
+            keys = {(math.floor(la[i] / 1e6 / DT_LAT), math.floor(lo[i] / 1e6 / DT_LON)) for i in sg}
+            for key in keys:
+                tiles.setdefault(key, []).append(rec)
+    os.makedirs(SURF_OUT, exist_ok=True)
+    names = []
+    for (ty, tx), recs in tiles.items():
+        nm = f"{ty}_{tx}"
+        names.append(nm)
+        with open(os.path.join(SURF_OUT, nm + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"v": 1, "w": recs}, fh, ensure_ascii=False, separators=(",", ":"))
+    with open(os.path.join(SURF_OUT, "index.json"), "w", encoding="utf-8") as fh:
+        json.dump({"v": 1, "tiles": sorted(names), "complete": complete}, fh, separators=(",", ":"))
+    print("surface tiles:", len(names), "complete", complete, flush=True)
+    commit("ランプ周辺の一般道データを更新")
+
 def main():
     import shutil
     if not os.path.exists("data/tolls.json"):
         bake_tolls()
+    si = os.path.join(SURF_OUT, "index.json")
+    if not os.path.exists(si) or not json.load(open(si)).get("complete"):
+        bake_surface()
     if os.path.isdir(RAW_OLD):
         shutil.rmtree(RAW_OLD)
     missing = []
