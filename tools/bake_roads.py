@@ -207,7 +207,7 @@ def bake_surface():
         body = "".join(f'way(around:350,{la:.6f},{lo:.6f})["highway"~"{SURF_HW}"];' for la, lo in b)
         q = f"[out:json][timeout:170];({body});out geom qt;"
         try:
-            js = fetch(q, 4)
+            js = fetch(q, 2)
         except Exception as ex:  # noqa
             print("surface batch failed", bi, ex, flush=True)
             with open(path, "w", encoding="utf-8") as fh:
@@ -220,8 +220,9 @@ def bake_surface():
             tags = {k: v for k, v in (el.get("tags") or {}).items() if k in SURF_KEEP}
             out.append([el["id"], el["nodes"], [round(g["lat"] * 1e6) for g in el["geometry"]],
                         [round(g["lon"] * 1e6) for g in el["geometry"]], tags])
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
             json.dump({"pts": b, "w": out}, fh, ensure_ascii=False, separators=(",", ":"))
+        os.replace(path + ".tmp", path)
         print("surface batch", bi, "/", len(batches), "ways", len(out), flush=True)
         if bi % 8 == 7:
             commit("一般道データ途中保存")
@@ -229,8 +230,13 @@ def bake_surface():
     import glob
     near = {}
     for f in sorted(glob.glob(os.path.join(SURF_RAW, "b*.json"))):
-        with open(f, encoding="utf-8") as fh:
-            js = json.load(fh)
+        try:
+            with open(f, encoding="utf-8") as fh:
+                js = json.load(fh)
+        except Exception:  # noqa  壊れたファイルは消して次回取り直す
+            os.remove(f)
+            complete = False
+            continue
         for la, lo in js["pts"]:
             near.setdefault((round(la / 0.005), round(lo / 0.006)), []).append((la, lo))
         for r in js["w"]:
@@ -329,8 +335,9 @@ def bake_buildings():
             out.append([el["id"], [v - la0 for v in la], [v - lo0 for v in lo],
                         [t.get("building", "yes"), num("height"), num("building:levels"), num("min_height"),
                          t.get("building:colour", ""), t.get("roof:shape", "")]])
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
             json.dump({"v": 1, "o": [la0, lo0], "b": out}, fh, ensure_ascii=False, separators=(",", ":"))
+        os.replace(path + ".tmp", path)
         done_n += 1
         print("bld", k, len(out), flush=True)
         if done_n % 15 == 0:
@@ -348,7 +355,10 @@ def main():
         bake_tolls()
     si = os.path.join(SURF_OUT, "index.json")
     if not os.path.exists(si) or not json.load(open(si)).get("complete"):
-        bake_surface()
+        try:
+            bake_surface()
+        except Exception as ex:  # noqa
+            print("surface step failed:", ex, flush=True)
     if os.path.isdir(RAW_OLD):
         shutil.rmtree(RAW_OLD)
     missing = []
