@@ -448,7 +448,7 @@ def bake_buildings_pbf():
             if i >= 0:
                 j = line.find("]", i + 17)
                 try:
-                    lo1, la1 = map(float, line[i + 17:j].split(",")[:2])
+                    lo1, la1 = map(float, line[i + 17:j].lstrip("[").split(",")[:2])
                     if not near_motorway(la1 * 1e6, lo1 * 1e6, 200):
                         continue
                 except ValueError:
@@ -461,9 +461,12 @@ def bake_buildings_pbf():
             except ValueError:
                 continue
             geo = f.get("geometry") or {}
-            if geo.get("type") != "Polygon":
+            if geo.get("type") == "Polygon":
+                ring = geo["coordinates"][0]
+            elif geo.get("type") == "MultiPolygon":
+                ring = geo["coordinates"][0][0]
+            else:
                 continue
-            ring = geo["coordinates"][0]
             if len(ring) < 4:
                 continue
             cla = sum(p[1] for p in ring) / len(ring)
