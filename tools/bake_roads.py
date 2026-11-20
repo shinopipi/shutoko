@@ -512,7 +512,7 @@ def bake_buildings_pbf():
         with open(os.path.join(BLD_OUT, k + ".json"), "w", encoding="utf-8") as fh:
             json.dump(js, fh, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(BLD_OUT, "index.json"), "w", encoding="utf-8") as fh:
-        json.dump({"v": 2, "tiles": sorted(tiles), "complete": True, "src": "geofabrik"}, fh, separators=(",", ":"))
+        json.dump({"v": 2, "tiles": sorted(tiles), "complete": n_keep > 0, "src": "geofabrik", "n": n_keep}, fh, separators=(",", ":"))
     commit("建物データを更新（Geofabrikの関東データから一括作成）")
     return True
 
@@ -598,7 +598,7 @@ def main():
     commit("関東の高速道路データを更新" + ("" if complete else "（一部。続きは次回実行で取得）"))
     bi = os.path.join(BLD_OUT, "index.json")
     bdone = os.path.exists(bi) and json.load(open(bi)).get("complete")
-    if complete and not (bdone and json.load(open(bi)).get("src") == "geofabrik"):
+    if complete and not (bdone and json.load(open(bi)).get("src") == "geofabrik" and json.load(open(bi)).get("n", 0) > 0):
         try:
             r = bake_buildings_pbf()
         except Exception as ex:  # noqa
